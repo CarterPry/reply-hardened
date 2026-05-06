@@ -31,7 +31,8 @@ the Notable app.
 ## Setup
 
 ```bash
-cd "/Users/seanrobins/imessage offscript"
+git clone https://github.com/srobins23/imessage-reply-tracker.git
+cd imessage-reply-tracker
 npm install
 ```
 
