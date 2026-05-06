@@ -1,0 +1,24 @@
+[package]
+name = "imessage-offscript"
+version = "0.1.0"
+description = "Local iMessage reply tracker"
+authors = ["Sean Robins"]
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "imessage_offscript_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.5.6", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+rusqlite = { version = "0.32", features = ["bundled"] }
+tauri = { version = "2.10.3", features = ["devtools"] }
+tauri-plugin-log = "2"
+tauri-plugin-notification = "2"
+thiserror = "1"
