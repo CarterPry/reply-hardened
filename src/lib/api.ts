@@ -17,8 +17,13 @@ export function openFdaSettings(): Promise<void> {
   return invoke<void>('open_fda_settings');
 }
 
-export function openChat(handle: string, isGroup: boolean, chatGuid: string): Promise<void> {
-  return invoke<void>('open_chat', { handle, isGroup, chatGuid });
+export function openChat(
+  handle: string,
+  isGroup: boolean,
+  chatGuid: string,
+  name: string,
+): Promise<void> {
+  return invoke<void>('open_chat', { handle, isGroup, chatGuid, name });
 }
 
 export function isAppError(e: unknown): e is AppError {

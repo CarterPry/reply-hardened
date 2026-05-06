@@ -83,12 +83,19 @@ pub fn open_fda_settings() -> Result<(), String> {
 }
 
 /// Open the conversation in Messages.app. 1:1 chats route through the
-/// `imessage://` URL scheme keyed by the contact's handle. Group chats
-/// have no first-class URL scheme, so we activate Messages and try
-/// AppleScript to surface the right thread by chat GUID — modern
-/// macOS has restricted Messages' scriptability, so this is best-effort.
+/// `imessage://` URL scheme keyed by the contact's handle. The URL
+/// scheme cannot address an existing group (it always opens a draft),
+/// so for groups we activate Messages, drive the sidebar search via
+/// keystrokes (⌘F + name + Return), and let Messages select the match.
 #[tauri::command]
-pub fn open_chat(handle: String, is_group: bool, chat_guid: String) -> Result<(), String> {
+pub fn open_chat(
+    handle: String,
+    is_group: bool,
+    chat_guid: String,
+    name: String,
+) -> Result<(), String> {
+    let _ = chat_guid; // retained on the API for future use (e.g. exact-match selection)
+
     if !is_group {
         let url = format!("imessage://{handle}");
         return std::process::Command::new("open")
@@ -98,24 +105,26 @@ pub fn open_chat(handle: String, is_group: bool, chat_guid: String) -> Result<()
             .map_err(|e| format!("opening chat: {e}"));
     }
 
-    // Group: bring Messages forward, then attempt scripted nav by guid.
-    let _ = std::process::Command::new("open")
-        .args(["-a", "Messages"])
-        .status();
-    let safe_guid = chat_guid.replace('"', "\\\"");
+    let safe_name = name.replace('\\', "\\\\").replace('"', "\\\"");
     let script = format!(
-        r#"tell application "Messages"
-    try
-        set theChat to first chat whose id is "{safe_guid}"
-        set selected chat to theChat
-    end try
+        r#"tell application "Messages" to activate
+delay 0.15
+tell application "System Events"
+    tell process "Messages"
+        keystroke "f" using {{command down}}
+        delay 0.1
+        keystroke "{safe_name}"
+        delay 0.25
+        key code 36
+    end tell
 end tell"#
     );
-    let _ = std::process::Command::new("osascript")
+    std::process::Command::new("osascript")
         .arg("-e")
         .arg(&script)
-        .status();
-    Ok(())
+        .status()
+        .map(|_| ())
+        .map_err(|e| format!("opening group chat: {e}"))
 }
 
 fn pending_replies_inner(state: &StateStore) -> AppResult<Vec<PendingReply>> {

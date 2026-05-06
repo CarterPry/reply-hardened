@@ -100,9 +100,10 @@ fn run_pending_query(conn: &Connection) -> AppResult<Vec<PendingReplyRow>> {
     // For each chat, pick the single most recent real message — text
     // or attachment, not a tapback/sticker reaction or a system event
     // (joins, renames). Surface chats whose last real message was
-    // inbound (is_from_me = 0). member_count comes from
-    // chat_handle_join, which excludes the user's own handle — so 1:1
-    // chats have member_count = 1.
+    // inbound (is_from_me = 0) AND the user hasn't already reacted to
+    // it with a tapback. member_count comes from chat_handle_join,
+    // which excludes the user's own handle — so 1:1 chats have
+    // member_count = 1.
     //
     // Filter rationale:
     //   item_type = 0                  — drops join/leave/rename rows
@@ -110,6 +111,14 @@ fn run_pending_query(conn: &Connection) -> AppResult<Vec<PendingReplyRow>> {
     //                                    and sticker reactions; real
     //                                    messages and inline replies
     //                                    keep this at 0
+    //
+    // Tapback dismissal: a user-sent tapback row has
+    // associated_message_type in 2000..2999 (adds) and points at the
+    // target via associated_message_guid, which Apple stores as either
+    // the bare guid or a `p:N/<guid>` / `bp:<guid>` prefix. We treat
+    // the chat as replied if any such row exists targeting the latest
+    // inbound message. Removal tapbacks (3000–3999) are intentionally
+    // ignored — if you remove your reaction, mark complete manually.
     let sql = r#"
         WITH ranked AS (
             SELECT
@@ -151,6 +160,20 @@ fn run_pending_query(conn: &Connection) -> AppResult<Vec<PendingReplyRow>> {
         LEFT JOIN handle h         ON h.ROWID = r.handle_id
         LEFT JOIN member_counts mc ON mc.chat_id = r.chat_id
         WHERE r.rn = 1 AND r.is_from_me = 0
+          AND NOT EXISTS (
+              SELECT 1
+              FROM message rx
+              JOIN chat_message_join cmj2 ON cmj2.message_id = rx.ROWID
+              WHERE cmj2.chat_id = r.chat_id
+                AND rx.is_from_me = 1
+                AND rx.associated_message_type >= 2000
+                AND rx.associated_message_type <  3000
+                AND (
+                    rx.associated_message_guid = r.msg_guid
+                    OR rx.associated_message_guid LIKE '%/' || r.msg_guid
+                    OR rx.associated_message_guid LIKE '%:' || r.msg_guid
+                )
+          )
         ORDER BY r.msg_date DESC
     "#;
 

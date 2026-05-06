@@ -176,7 +176,7 @@ export function App() {
                 removing={removing.has(item.lastMessageGuid)}
                 onComplete={() => onComplete(item)}
                 onOpen={() => {
-                  openChat(item.handle, item.isGroup, item.chatGuid).catch((e) =>
+                  openChat(item.handle, item.isGroup, item.chatGuid, item.name).catch((e) =>
                     console.error('open_chat failed', e),
                   );
                 }}
