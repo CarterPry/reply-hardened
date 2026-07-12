@@ -17,6 +17,8 @@
   --error-bg: #fff5f5;
   --error-text: #b42318;
   --error-border: rgba(180, 35, 24, 0.2);
+  --age-aging: #b45309;
+  --age-stale: #b42318;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 
   --radius-row: 14px;
@@ -57,6 +59,8 @@
     --error-bg: rgba(180, 35, 24, 0.12);
     --error-text: #fda29b;
     --error-border: rgba(253, 162, 155, 0.2);
+    --age-aging: #fbbf24;
+    --age-stale: #fda29b;
     --shadow: none;
   }
 }

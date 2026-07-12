@@ -1,15 +1,20 @@
 use crate::contacts::{self, ContactDirectory};
 use crate::error::AppResult;
-use crate::pending;
-use crate::state::StateStore;
+use crate::pending::{self, Direction};
+use crate::state::{MutedChat, StateStore};
 use serde::Serialize;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 
-/// Hide rows whose last inbound message is older than this. Anything
-/// past three months is effectively dead — surfacing it as "owes a
-/// reply" creates noise, not signal.
+/// Hide rows whose last message is older than this. Anything past
+/// three months is effectively dead — surfacing it creates noise,
+/// not signal.
 const STALE_AFTER_SECS: i64 = 90 * 86_400;
+
+/// In "waiting on them" mode, only surface threads where your
+/// unanswered message has sat for at least this long. A text sent an
+/// hour ago isn't a follow-up candidate yet.
+const WAITING_MIN_AGE_SECS: i64 = 3 * 86_400;
 
 /// Cap the preview string at this many characters before sending to
 /// the frontend. The UI truncates visually too, but bounding payload
@@ -37,40 +42,81 @@ pub struct PendingReply {
     /// `None` when the row was a sticker, attachment-only, or the
     /// attributedBody parse failed.
     pub preview: Option<String>,
+    /// What to type into Messages' search when opening a group chat.
+    /// The group's real display name when it has one; otherwise
+    /// participant first names space-separated — unlike the display
+    /// label ("Mom, Dad +2"), that's something Messages search can
+    /// actually match.
+    pub search_hint: String,
 }
 
+/// Fetch the reply list for a mode: "owed" (they messaged last — you
+/// owe a reply) or "waiting" (you messaged last ≥3 days ago — you're
+/// waiting on them). The tray count tracks the owed list only.
 #[tauri::command]
-pub fn get_pending_replies(
+pub fn get_replies(
     app: AppHandle,
     state: State<'_, StateStore>,
+    mode: String,
 ) -> AppResult<Vec<PendingReply>> {
-    let result = pending_replies_inner(&state)?;
-    update_badge(&app, result.len());
+    let direction = if mode == "waiting" {
+        Direction::Waiting
+    } else {
+        Direction::Owed
+    };
+    let result = replies_inner(&state, direction)?;
+    if direction == Direction::Owed {
+        update_tray_count(&app, result.len());
+    }
     Ok(result)
 }
 
-/// Same logic as `get_pending_replies`. Exposed separately to match
-/// the spec — the frontend uses this on focus events.
-#[tauri::command]
-pub fn refresh(app: AppHandle, state: State<'_, StateStore>) -> AppResult<Vec<PendingReply>> {
-    let result = pending_replies_inner(&state)?;
-    update_badge(&app, result.len());
-    Ok(result)
-}
-
-fn update_badge(app: &AppHandle, count: usize) {
-    let value = if count == 0 { None } else { Some(count as i64) };
-    let Some(win) = app.get_webview_window("main") else {
+fn update_tray_count(app: &AppHandle, count: usize) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    // Skip the redraw when nothing changed — rewriting the tray title
+    // every 30s poll makes the menu bar item flicker.
+    static LAST: AtomicUsize = AtomicUsize::new(usize::MAX);
+    if LAST.swap(count, Ordering::Relaxed) == count {
+        return;
+    }
+    let Some(tray) = app.tray_by_id("main") else {
         return;
     };
-    if let Err(e) = win.set_badge_count(value) {
-        log::warn!("set_badge_count failed: {e}");
+    let title = if count == 0 {
+        None
+    } else {
+        Some(count.to_string())
+    };
+    if let Err(e) = tray.set_title(title) {
+        log::warn!("tray set_title failed: {e}");
     }
 }
 
 #[tauri::command]
 pub fn mark_complete(state: State<'_, StateStore>, last_message_guid: String) -> AppResult<()> {
     state.mark_complete(&last_message_guid)
+}
+
+/// Hide a chat from both lists until `until` (unix seconds).
+#[tauri::command]
+pub fn snooze_chat(state: State<'_, StateStore>, chat_guid: String, until: i64) -> AppResult<()> {
+    state.snooze_chat(&chat_guid, until)
+}
+
+/// Permanently hide a chat. `name` is captured for the unmute UI.
+#[tauri::command]
+pub fn mute_chat(state: State<'_, StateStore>, chat_guid: String, name: String) -> AppResult<()> {
+    state.mute_chat(&chat_guid, &name)
+}
+
+#[tauri::command]
+pub fn unmute_chat(state: State<'_, StateStore>, chat_guid: String) -> AppResult<()> {
+    state.unmute_chat(&chat_guid)
+}
+
+#[tauri::command]
+pub fn list_muted(state: State<'_, StateStore>) -> AppResult<Vec<MutedChat>> {
+    state.muted_chats()
 }
 
 #[tauri::command]
@@ -82,11 +128,38 @@ pub fn open_fda_settings() -> Result<(), String> {
         .map_err(|e| format!("opening FDA settings pane: {e}"))
 }
 
+#[tauri::command]
+pub fn open_accessibility_settings() -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+        .status()
+        .map(|_| ())
+        .map_err(|e| format!("opening Accessibility settings pane: {e}"))
+}
+
+#[tauri::command]
+pub fn open_automation_settings() -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Automation")
+        .status()
+        .map(|_| ())
+        .map_err(|e| format!("opening Automation settings pane: {e}"))
+}
+
 /// Open the conversation in Messages.app. 1:1 chats route through the
 /// `imessage://` URL scheme keyed by the contact's handle. The URL
 /// scheme cannot address an existing group (it always opens a draft),
 /// so for groups we activate Messages, drive the sidebar search via
 /// keystrokes (⌘F + name + Return), and let Messages select the match.
+///
+/// The keystroke path needs two macOS permissions, each with its own
+/// failure signature in osascript's stderr:
+///   Automation (Apple Events)  — error -1743 / "Not authorized"
+///   Accessibility (keystrokes) — error 1002 / "assistive access"
+/// Both are mapped to structured errors the frontend turns into a
+/// banner pointing at the right Settings pane. Running the script
+/// directly (no pre-probe) lets macOS show its own grant prompt on
+/// first use.
 #[tauri::command]
 pub fn open_chat(
     handle: String,
@@ -108,42 +181,67 @@ pub fn open_chat(
     let safe_name = name.replace('\\', "\\\\").replace('"', "\\\"");
     let script = format!(
         r#"tell application "Messages" to activate
-delay 0.15
+delay 0.4
 tell application "System Events"
     tell process "Messages"
         keystroke "f" using {{command down}}
-        delay 0.1
-        keystroke "{safe_name}"
         delay 0.25
+        keystroke "{safe_name}"
+        delay 0.6
         key code 36
     end tell
 end tell"#
     );
-    std::process::Command::new("osascript")
+    let out = std::process::Command::new("osascript")
         .arg("-e")
         .arg(&script)
-        .status()
-        .map(|_| ())
-        .map_err(|e| format!("opening group chat: {e}"))
+        .output()
+        .map_err(|e| format!("opening group chat: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if stderr.contains("assistive") || stderr.contains("(1002)") {
+        return Err("accessibility_denied".to_string());
+    }
+    if stderr.contains("-1743") || stderr.contains("Not authorized") {
+        return Err("automation_denied".to_string());
+    }
+    Err(format!("opening group chat: {}", stderr.trim()))
 }
 
-fn pending_replies_inner(state: &StateStore) -> AppResult<Vec<PendingReply>> {
-    let results = pending::read_pending_replies()?;
-    let dir = contacts::load();
+fn replies_inner(state: &StateStore, direction: Direction) -> AppResult<Vec<PendingReply>> {
+    let results = pending::read_pending_replies(direction)?;
+    let dir = contacts::load_cached();
     let completed = state.completed_guids()?;
+    let snoozed = state.snoozed_until()?;
+    let muted: std::collections::HashSet<String> = state
+        .muted_chats()?
+        .into_iter()
+        .map(|m| m.chat_guid)
+        .collect();
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     let cutoff = now - STALE_AFTER_SECS;
+    // In waiting mode a thread only counts once it's gone quiet.
+    let newest_allowed = match direction {
+        Direction::Owed => i64::MAX,
+        Direction::Waiting => now - WAITING_MIN_AGE_SECS,
+    };
 
     let mut out = Vec::with_capacity(results.rows.len());
     for r in results.rows {
         if completed.contains(&r.last_message_guid) {
             continue;
         }
-        if r.last_message_timestamp_unix < cutoff {
+        if r.last_message_timestamp_unix < cutoff || r.last_message_timestamp_unix > newest_allowed
+        {
+            continue;
+        }
+        if muted.contains(&r.chat_guid) || snoozed.contains_key(&r.chat_guid) {
             continue;
         }
         let is_group = r.member_count > 1;
@@ -158,27 +256,31 @@ fn pending_replies_inner(state: &StateStore) -> AppResult<Vec<PendingReply>> {
             Vec::new()
         };
 
-        let (name, handle) = if is_group {
+        let (name, handle, search_hint) = if is_group {
             let display = r
                 .display_name
                 .as_ref()
                 .map(|s| s.trim())
                 .filter(|s| !s.is_empty());
-            let name = match display {
-                Some(d) => d.to_string(),
-                None => format_group_name(&participants),
+            let (name, hint) = match display {
+                Some(d) => (d.to_string(), d.to_string()),
+                None => (
+                    format_group_name(&participants),
+                    search_hint_for_group(&participants),
+                ),
             };
             // For groups, "handle" is informational only — open_chat
-            // routes through chat_guid for these.
+            // routes through the search hint for these.
             let handle = r.chat_identifier.clone();
-            (name, handle)
+            (name, handle, hint)
         } else {
             let h = r
                 .handle_id_str
                 .clone()
                 .unwrap_or_else(|| r.chat_identifier.clone());
             let n = resolve_one(&h, &dir);
-            (n, h)
+            let hint = n.clone();
+            (n, h, hint)
         };
 
         let last_sender = if is_group {
@@ -202,9 +304,22 @@ fn pending_replies_inner(state: &StateStore) -> AppResult<Vec<PendingReply>> {
             participants,
             last_sender,
             preview,
+            search_hint,
         });
     }
     Ok(out)
+}
+
+/// Search text for an unnamed group: first names of up to three
+/// participants, space-separated. No commas or "+N" — Messages search
+/// tokenizes on words and those extras kill the match.
+fn search_hint_for_group(participants: &[String]) -> String {
+    participants
+        .iter()
+        .take(3)
+        .map(|p| first_name(p))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn resolve_one(handle: &str, dir: &ContactDirectory) -> String {

@@ -1,8 +1,17 @@
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{params, Connection, OpenFlags};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::error::{AppError, AppResult};
+
+/// Which side of the conversation the surfaced rows represent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    /// Last real message was inbound — the user owes a reply.
+    Owed,
+    /// Last real message was outbound — the user is waiting on a reply.
+    Waiting,
+}
 
 /// One row from `chat.db` representing the most recent message in a
 /// chat where that message was sent by the other party (i.e. a chat
@@ -40,7 +49,7 @@ pub fn chat_db_path() -> PathBuf {
     PathBuf::from(home).join("Library/Messages/chat.db")
 }
 
-pub fn read_pending_replies() -> AppResult<PendingResults> {
+pub fn read_pending_replies(direction: Direction) -> AppResult<PendingResults> {
     let path = chat_db_path();
 
     // Surface FDA failures as a structured PermissionDenied before we
@@ -87,7 +96,7 @@ pub fn read_pending_replies() -> AppResult<PendingResults> {
         }
     })?;
 
-    let rows = run_pending_query(&conn)?;
+    let rows = run_pending_query(&conn, direction)?;
     let chat_rowids: Vec<i64> = rows.iter().map(|r| r.chat_rowid).collect();
     let participants_by_chat = run_participants_query(&conn, &chat_rowids)?;
     Ok(PendingResults {
@@ -96,29 +105,47 @@ pub fn read_pending_replies() -> AppResult<PendingResults> {
     })
 }
 
-fn run_pending_query(conn: &Connection) -> AppResult<Vec<PendingReplyRow>> {
+fn run_pending_query(conn: &Connection, direction: Direction) -> AppResult<Vec<PendingReplyRow>> {
     // For each chat, pick the single most recent real message — text
     // or attachment, not a tapback/sticker reaction or a system event
-    // (joins, renames). Surface chats whose last real message was
-    // inbound (is_from_me = 0) AND the user hasn't already reacted to
-    // it with a tapback. member_count comes from chat_handle_join,
-    // which excludes the user's own handle — so 1:1 chats have
-    // member_count = 1.
+    // (joins, renames). Surface chats whose last real message came
+    // from the queried side AND the other side hasn't already reacted
+    // to it. member_count comes from chat_handle_join, which excludes
+    // the user's own handle — so 1:1 chats have member_count = 1.
     //
     // Filter rationale:
     //   item_type = 0                  — drops join/leave/rename rows
-    //   associated_message_type = 0    — drops tapback (love/like/etc)
-    //                                    and sticker reactions; real
-    //                                    messages and inline replies
-    //                                    keep this at 0
+    //   associated_message_type = 0    — drops tapback and sticker
+    //                                    reactions; real messages and
+    //                                    inline replies keep this at 0
+    //   is_filtered = 0                — drops chats Messages itself
+    //                                    classifies as junk/promotions
+    //                                    (spam carries values 1–68;
+    //                                    every known-contact chat is 0)
+    //   is_blackholed / is_archived    — user explicitly buried these
+    //   NOT LIKE '%(smsf%'             — SMS-filter shadow chats
+    //                                    ((smsft)/(smsfp)/(smsft_rm)
+    //                                    suffixes); some carry
+    //                                    is_filtered = 0 despite being
+    //                                    filter-category duplicates
     //
-    // Tapback dismissal: a user-sent tapback row has
-    // associated_message_type in 2000..2999 (adds) and points at the
-    // target via associated_message_guid, which Apple stores as either
-    // the bare guid or a `p:N/<guid>` / `bp:<guid>` prefix. We treat
-    // the chat as replied if any such row exists targeting the latest
-    // inbound message. Removal tapbacks (3000–3999) are intentionally
-    // ignored — if you remove your reaction, mark complete manually.
+    // Reaction dismissal: a reaction row points at its target via
+    // associated_message_guid, stored as either the bare guid or a
+    // `p:N/<guid>` / `bp:<guid>` prefix. Reaction "add" types:
+    //   1000       — sticker placed on a message
+    //   2000–2999  — classic tapbacks (love/like/…, incl. 2006/2007)
+    //   4000–4999  — custom emoji tapbacks (iOS 18+)
+    // Removal types (3000–3999) are intentionally ignored — if you
+    // remove your reaction, mark complete manually.
+    //
+    // For Owed we look for the user's reaction (is_from_me = 1) on the
+    // latest inbound message; for Waiting, the other party's reaction
+    // (is_from_me = 0) on the latest outbound message — either way a
+    // reaction counts as the thread being answered.
+    let (last_from_me, reactor_from_me) = match direction {
+        Direction::Owed => (0i64, 1i64),
+        Direction::Waiting => (1i64, 0i64),
+    };
     let sql = r#"
         WITH ranked AS (
             SELECT
@@ -159,26 +186,35 @@ fn run_pending_query(conn: &Connection) -> AppResult<Vec<PendingReplyRow>> {
         JOIN message win_msg       ON win_msg.ROWID = r.msg_rowid
         LEFT JOIN handle h         ON h.ROWID = r.handle_id
         LEFT JOIN member_counts mc ON mc.chat_id = r.chat_id
-        WHERE r.rn = 1 AND r.is_from_me = 0
+        WHERE r.rn = 1 AND r.is_from_me = ?1
+          AND COALESCE(c.is_filtered, 0) = 0
+          AND COALESCE(c.is_blackholed, 0) = 0
+          AND COALESCE(c.is_archived, 0) = 0
+          AND c.chat_identifier NOT LIKE '%(smsf%'
           AND NOT EXISTS (
               SELECT 1
               FROM message rx
               JOIN chat_message_join cmj2 ON cmj2.message_id = rx.ROWID
               WHERE cmj2.chat_id = r.chat_id
-                AND rx.is_from_me = 1
-                AND rx.associated_message_type >= 2000
-                AND rx.associated_message_type <  3000
+                AND rx.is_from_me = ?2
+                AND (
+                    rx.associated_message_type = 1000
+                    OR (rx.associated_message_type >= 2000
+                        AND rx.associated_message_type < 3000)
+                    OR (rx.associated_message_type >= 4000
+                        AND rx.associated_message_type < 5000)
+                )
                 AND (
                     rx.associated_message_guid = r.msg_guid
                     OR rx.associated_message_guid LIKE '%/' || r.msg_guid
                     OR rx.associated_message_guid LIKE '%:' || r.msg_guid
                 )
           )
-        ORDER BY r.msg_date DESC
+        ORDER BY r.msg_date ASC
     "#;
 
     let mut stmt = conn.prepare(sql)?;
-    let rows = stmt.query_map([], |row| {
+    let rows = stmt.query_map(params![last_from_me, reactor_from_me], |row| {
         let date_raw: i64 = row.get("last_message_date")?;
         let text: Option<String> = row.get("msg_text")?;
         let body: Option<Vec<u8>> = row.get("msg_attributed_body")?;

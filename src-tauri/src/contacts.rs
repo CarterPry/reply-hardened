@@ -1,6 +1,12 @@
 use rusqlite::{Connection, OpenFlags};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+/// AddressBook changes rarely; re-walking every `.abcddb` on each 30s
+/// poll is wasted IO. Cached copies serve reads for this long.
+const CACHE_TTL: Duration = Duration::from_secs(300);
 
 /// Resolves iMessage handles (phone numbers, emails) to display names
 /// by reading the local AddressBook SQLite stores. Best-effort: any
@@ -41,6 +47,22 @@ fn phone_tail(s: &str) -> String {
     } else {
         digits[digits.len() - 10..].to_string()
     }
+}
+
+/// TTL-cached wrapper around `load()`. All command paths should use
+/// this; `load()` stays public for tests and forced refreshes.
+pub fn load_cached() -> ContactDirectory {
+    static CACHE: OnceLock<Mutex<Option<(Instant, ContactDirectory)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    let mut guard = cache.lock().expect("contacts cache poisoned");
+    if let Some((loaded_at, dir)) = guard.as_ref() {
+        if loaded_at.elapsed() < CACHE_TTL {
+            return dir.clone();
+        }
+    }
+    let dir = load();
+    *guard = Some((Instant::now(), dir.clone()));
+    dir
 }
 
 pub fn load() -> ContactDirectory {
