@@ -37,6 +37,8 @@ export function App() {
   const [error, setError] = useState<AppError | null>(null);
   const [loading, setLoading] = useState(true);
   const [removing, setRemoving] = useState<Set<string>>(new Set());
+  /** lastMessageGuids of rows selected for a bulk action. */
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   /** Tracks the set of lastMessageGuids we've already shown to the user.
    *  Stays null until the first successful load — so the very first
    *  result doesn't trigger a flood of notifications. Only the owed
@@ -53,6 +55,15 @@ export function App() {
       setLists({ owed, waiting });
       setMuted(mutedList);
       setError(null);
+      // Drop selections for rows that vanished in this refresh.
+      const alive = new Set([
+        ...owed.map((x) => x.lastMessageGuid),
+        ...waiting.map((x) => x.lastMessageGuid),
+      ]);
+      setSelected((prev) => {
+        const next = new Set([...prev].filter((g) => alive.has(g)));
+        return next.size === prev.size ? prev : next;
+      });
       const nextSeen = new Set(owed.map((x) => x.lastMessageGuid));
       const prevSeen = seenGuidsRef.current;
       if (prevSeen) {
@@ -199,6 +210,92 @@ export function App() {
     [refreshAll],
   );
 
+  const toggleSelect = useCallback((item: PendingReply) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(item.lastMessageGuid)) {
+        next.delete(item.lastMessageGuid);
+      } else {
+        next.add(item.lastMessageGuid);
+      }
+      return next;
+    });
+  }, []);
+
+  const clearSelection = useCallback(() => setSelected(new Set()), []);
+
+  /** Switch tabs and drop the selection — it belongs to one list. */
+  const switchMode = useCallback(
+    (next: ReplyMode) => {
+      setMode(next);
+      clearSelection();
+    },
+    [clearSelection],
+  );
+
+  // Escape cancels the selection.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') clearSelection();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [clearSelection]);
+
+  /** Apply one action to every selected row, animating them out
+   *  together. Failures put the rows back and force a resync. */
+  const bulkAct = useCallback(
+    async (action: (item: PendingReply) => Promise<void>) => {
+      const targets = lists[mode].filter((x) => selected.has(x.lastMessageGuid));
+      if (targets.length === 0) return;
+      const guids = targets.map((x) => x.lastMessageGuid);
+      setRemoving((prev) => new Set([...prev, ...guids]));
+      clearSelection();
+      const results = await Promise.allSettled(targets.map((item) => action(item)));
+      const failed = results.some((r) => r.status === 'rejected');
+      if (failed) {
+        console.error('bulk action partially failed', results);
+      }
+      guids.forEach((g) => seenGuidsRef.current?.delete(g));
+      setTimeout(() => {
+        const gone = new Set(guids);
+        setLists((prev) => ({
+          owed: prev.owed.filter((x) => !gone.has(x.lastMessageGuid)),
+          waiting: prev.waiting.filter((x) => !gone.has(x.lastMessageGuid)),
+        }));
+        setRemoving((prev) => {
+          const next = new Set(prev);
+          guids.forEach((g) => next.delete(g));
+          return next;
+        });
+        // On any failure, resync from the source of truth so rows the
+        // action missed come back instead of silently disappearing.
+        if (failed) refreshAll();
+      }, 340);
+    },
+    [lists, mode, selected, clearSelection, refreshAll],
+  );
+
+  const onBulkComplete = useCallback(
+    () => bulkAct((item) => markComplete(item.lastMessageGuid)),
+    [bulkAct],
+  );
+
+  const onBulkSnooze = useCallback(() => {
+    const until = nextMorning();
+    return bulkAct((item) => snoozeChat(item.chatGuid, until));
+  }, [bulkAct]);
+
+  const onBulkMute = useCallback(
+    () =>
+      bulkAct(async (item) => {
+        await muteChat(item.chatGuid, item.name);
+      }).then(async () => {
+        setMuted(await listMuted());
+      }),
+    [bulkAct],
+  );
+
   const onOpen = useCallback((item: PendingReply) => {
     openChat(item.handle, item.isGroup, item.chatGuid, item.searchHint).catch((e) => {
       const msg = String(e);
@@ -223,13 +320,13 @@ export function App() {
             label="Owe reply"
             count={lists.owed.length}
             active={mode === 'owed'}
-            onClick={() => setMode('owed')}
+            onClick={() => switchMode('owed')}
           />
           <TabButton
             label="Waiting"
             count={lists.waiting.length}
             active={mode === 'waiting'}
-            onClick={() => setMode('waiting')}
+            onClick={() => switchMode('waiting')}
           />
         </nav>
       </header>
@@ -294,13 +391,44 @@ export function App() {
                 relative={formatRelative(item.timestamp)}
                 tier={ageTier(item.timestamp)}
                 removing={removing.has(item.lastMessageGuid)}
+                selected={selected.has(item.lastMessageGuid)}
+                selectionActive={selected.size > 0}
                 onComplete={() => onComplete(item)}
                 onSnooze={() => onSnooze(item)}
                 onMute={() => onMute(item)}
                 onOpen={() => onOpen(item)}
+                onToggleSelect={() => toggleSelect(item)}
               />
             ))}
           </ul>
+        )}
+        {selected.size > 0 && (
+          <div className="selection-bar">
+            <span className="selection-bar__count">{selected.size} selected</span>
+            <div className="selection-bar__actions">
+              <button className="btn btn--small" type="button" onClick={onBulkSnooze}>
+                Snooze
+              </button>
+              <button className="btn btn--small" type="button" onClick={onBulkMute}>
+                Mute
+              </button>
+              <button
+                className="btn btn--small btn--primary"
+                type="button"
+                onClick={onBulkComplete}
+              >
+                Done
+              </button>
+              <button
+                className="btn btn--small"
+                type="button"
+                aria-label="Cancel selection"
+                onClick={clearSelection}
+              >
+                ✕
+              </button>
+            </div>
+          </div>
         )}
         {!loading && !error && muted.length > 0 && (
           <footer className="muted-footer">
