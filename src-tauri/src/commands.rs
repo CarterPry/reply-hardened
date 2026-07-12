@@ -179,8 +179,11 @@ pub fn open_chat(
     }
 
     let safe_name = name.replace('\\', "\\\\").replace('"', "\\\"");
+    // `reopen` restores a window when Messages is running windowless —
+    // otherwise ⌘F lands nowhere.
     let script = format!(
-        r#"tell application "Messages" to activate
+        r#"tell application "Messages" to reopen
+tell application "Messages" to activate
 delay 0.4
 tell application "System Events"
     tell process "Messages"
