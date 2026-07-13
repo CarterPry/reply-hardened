@@ -265,11 +265,9 @@ export function App() {
         refreshAll();
         return;
       }
-      // Tell the seen-set we no longer have these so a future revival
-      // (a new message) is correctly detected as "new".
-      targets.forEach((x) => {
-        if (isReply(x)) seenGuidsRef.current?.delete(x.lastMessageGuid);
-      });
+      // The seen-set keeps these guids: a genuine revival arrives with
+      // a NEW message guid (so it still notifies), while an undo brings
+      // back the same guid and must NOT re-notify.
       const n = targets.length;
       const label =
         kind === 'done'

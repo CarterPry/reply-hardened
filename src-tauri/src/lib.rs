@@ -20,6 +20,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_positioner::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // Menu bar app: no dock icon, no cmd-tab entry. The tray
             // icon is the app's presence; the window is a drop-down.
@@ -53,8 +54,23 @@ pub fn run() {
                 StateStore::open(&state_path).map_err(|e| format!("opening state db: {e}"))?;
             app.manage(store);
 
+            let check = MenuItem::with_id(
+                app,
+                "check_updates",
+                "Check for Updates…",
+                true,
+                None::<&str>,
+            )?;
             let quit = MenuItem::with_id(app, "quit", "Quit Repli", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&quit])?;
+            let menu = Menu::with_items(app, &[&check, &quit])?;
+
+            // Quiet availability check at launch. Skipped in dev: there
+            // is no appcast for unreleased builds and the noise drowns
+            // real logs.
+            if !cfg!(debug_assertions) {
+                check_for_updates(app.handle().clone(), false);
+            }
+
             TrayIconBuilder::with_id("main")
                 .icon(
                     app.default_window_icon()
@@ -67,6 +83,8 @@ pub fn run() {
                 .on_menu_event(|app, event| {
                     if event.id() == "quit" {
                         app.exit(0);
+                    } else if event.id() == "check_updates" {
+                        check_for_updates(app.clone(), true);
                     }
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -171,4 +189,86 @@ pub fn run() {
                 }
             }
         });
+}
+
+/// Check the release feed for a newer version. `interactive` = the
+/// user asked via the tray menu: install immediately and restart, and
+/// report "up to date" / failures. A background check (launch) only
+/// posts an "update available" notification - it never restarts the
+/// app out from under the user.
+fn check_for_updates(app: tauri::AppHandle, interactive: bool) {
+    use tauri_plugin_notification::NotificationExt;
+    use tauri_plugin_updater::UpdaterExt;
+
+    tauri::async_runtime::spawn(async move {
+        let updater = match app.updater() {
+            Ok(u) => u,
+            Err(e) => {
+                log::warn!("updater unavailable: {e}");
+                return;
+            }
+        };
+        match updater.check().await {
+            Ok(Some(update)) => {
+                if !interactive {
+                    let _ = app
+                        .notification()
+                        .builder()
+                        .title("Repli update available")
+                        .body(format!(
+                            "Version {} is out. Right-click the menu bar icon and choose \
+                             \"Check for Updates…\" to install.",
+                            update.version
+                        ))
+                        .show();
+                    return;
+                }
+                let version = update.version.clone();
+                match update.download_and_install(|_, _| {}, || {}).await {
+                    Ok(()) => {
+                        let _ = app
+                            .notification()
+                            .builder()
+                            .title("Repli updated")
+                            .body(format!("Version {version} installed - restarting."))
+                            .show();
+                        app.restart();
+                    }
+                    Err(e) => {
+                        log::warn!("update install failed: {e}");
+                        let _ = app
+                            .notification()
+                            .builder()
+                            .title("Update failed")
+                            .body(e.to_string())
+                            .show();
+                    }
+                }
+            }
+            Ok(None) => {
+                if interactive {
+                    let _ = app
+                        .notification()
+                        .builder()
+                        .title("Repli is up to date")
+                        .body(format!(
+                            "You're on the latest version ({}).",
+                            app.package_info().version
+                        ))
+                        .show();
+                }
+            }
+            Err(e) => {
+                log::warn!("update check failed: {e}");
+                if interactive {
+                    let _ = app
+                        .notification()
+                        .builder()
+                        .title("Update check failed")
+                        .body(e.to_string())
+                        .show();
+                }
+            }
+        }
+    });
 }
