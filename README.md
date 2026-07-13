@@ -15,15 +15,16 @@ this; it's why the code is open.
 
 Download the latest DMG from
 [Releases](https://github.com/srobins23/repli/releases), open it, and
-drag Repli to Applications.
+**drag Repli to Applications** - don't launch it from inside the disk
+image window (macOS refuses to run it from there).
 
-The build is currently **unsigned** (no Apple Developer ID yet), so
-macOS will warn that it "cannot verify" the app or call it "damaged"
-on first open. Two ways past that, pick one:
+The build is ad-hoc signed but not notarized (no Apple Developer ID
+yet), so the first launch from Applications will say macOS "could not
+verify" the app. Two ways past that, pick one:
 
-- Open **System Settings → Privacy & Security**, scroll down, and
-  click **Open Anyway** next to the Repli message, or
-- run `xattr -d com.apple.quarantine /Applications/Repli.app` in
+- Close the dialog, open **System Settings → Privacy & Security**,
+  scroll down, and click **Open Anyway** next to the Repli message, or
+- run `xattr -rd com.apple.quarantine /Applications/Repli.app` in
   Terminal.
 
 You'll also need to grant Full Disk Access (see
