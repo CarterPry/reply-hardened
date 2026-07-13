@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    imessage_offscript_lib::run();
+    repli_lib::run();
 }

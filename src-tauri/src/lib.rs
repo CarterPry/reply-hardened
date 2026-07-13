@@ -1,8 +1,10 @@
 mod commands;
-mod contacts;
-mod error;
-mod pending;
-mod state;
+pub mod config;
+pub mod contacts;
+pub mod error;
+pub mod pending;
+pub mod replies;
+pub mod state;
 
 use state::StateStore;
 use tauri::{
@@ -35,7 +37,7 @@ pub fn run() {
             let quit = MenuItem::with_id(
                 app,
                 "quit",
-                "Quit iMessage Reply Tracker",
+                "Quit Repli",
                 true,
                 None::<&str>,
             )?;

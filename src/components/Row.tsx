@@ -5,6 +5,10 @@ import { initials } from '../lib/format';
 
 interface RowProps {
   item: PendingReply;
+  /** Non-null when the row is acknowledged: the short explanation
+   *  shown in the meta line ("They reacted" / "You reacted — never
+   *  replied"). Acknowledged rows render dimmed. */
+  ackLabel: string | null;
   relative: string;
   tier: AgeTier;
   removing: boolean;
@@ -21,6 +25,7 @@ interface RowProps {
 
 export function Row({
   item,
+  ackLabel,
   relative,
   tier,
   removing,
@@ -52,7 +57,7 @@ export function Row({
   const fallbackMeta = item.isGroup && item.lastSender ? item.lastSender : 'Needs reply';
   return (
     <li
-      className={`row${removing ? ' row--removing' : ''}${selected ? ' row--selected' : ''}`}
+      className={`row${removing ? ' row--removing' : ''}${selected ? ' row--selected' : ''}${ackLabel ? ' row--acked' : ''}`}
       role="button"
       tabIndex={0}
       aria-selected={selected}
@@ -81,6 +86,12 @@ export function Row({
       <div className="row__body">
         <div className="row__name">{item.name}</div>
         <div className="row__meta">
+          {ackLabel && (
+            <>
+              <span className="row__ack">{ackLabel}</span>
+              <span className="row__sep">·</span>
+            </>
+          )}
           <span className="row__preview">{previewText ?? fallbackMeta}</span>
           <span className="row__sep">·</span>
           <span className={`row__time row__time--${tier}`}>{relative}</span>

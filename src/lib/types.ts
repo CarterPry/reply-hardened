@@ -21,6 +21,10 @@ export interface PendingReply {
    *  the real display name, or participant first names for unnamed
    *  groups (the "+N" display label doesn't match anything). */
   searchHint: string;
+  /** The thread was closed by a tapback rather than a real reply
+   *  ("you reacted, never replied" / "they reacted"). Rendered
+   *  demoted and excluded from badge counts, but still visible. */
+  acknowledged: boolean;
 }
 
 export interface MutedChat {

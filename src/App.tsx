@@ -67,7 +67,10 @@ export function App() {
       const nextSeen = new Set(owed.map((x) => x.lastMessageGuid));
       const prevSeen = seenGuidsRef.current;
       if (prevSeen) {
-        const fresh = owed.filter((x) => !prevSeen.has(x.lastMessageGuid));
+        // Acknowledged rows are not news — you already reacted.
+        const fresh = owed.filter(
+          (x) => !prevSeen.has(x.lastMessageGuid) && !x.acknowledged,
+        );
         if (fresh.length > 0) {
           notifyNew(fresh).catch((e) => console.error('notify failed', e));
         }
@@ -318,13 +321,13 @@ export function App() {
         <nav className="tabs" aria-label="Reply lists">
           <TabButton
             label="Owe reply"
-            count={lists.owed.length}
+            count={lists.owed.filter((x) => !x.acknowledged).length}
             active={mode === 'owed'}
             onClick={() => switchMode('owed')}
           />
           <TabButton
             label="Waiting"
-            count={lists.waiting.length}
+            count={lists.waiting.filter((x) => !x.acknowledged).length}
             active={mode === 'waiting'}
             onClick={() => switchMode('waiting')}
           />
@@ -334,8 +337,8 @@ export function App() {
         <div className="banner">
           <p>
             {banner === 'accessibility'
-              ? 'Opening group chats needs the Accessibility permission. Enable "iMessage Reply Tracker" under System Settings → Privacy & Security → Accessibility, then try again.'
-              : 'Opening group chats needs permission to control Messages. Allow "iMessage Reply Tracker" under System Settings → Privacy & Security → Automation, then try again.'}
+              ? 'Opening group chats needs the Accessibility permission. Enable "Repli" under System Settings → Privacy & Security → Accessibility, then try again.'
+              : 'Opening group chats needs permission to control Messages. Allow "Repli" under System Settings → Privacy & Security → Automation, then try again.'}
           </p>
           <div className="banner__actions">
             <button
@@ -388,6 +391,13 @@ export function App() {
               <Row
                 key={item.lastMessageGuid}
                 item={item}
+                ackLabel={
+                  item.acknowledged
+                    ? mode === 'owed'
+                      ? 'You reacted — never replied'
+                      : 'They reacted'
+                    : null
+                }
                 relative={formatRelative(item.timestamp)}
                 tier={ageTier(item.timestamp)}
                 removing={removing.has(item.lastMessageGuid)}

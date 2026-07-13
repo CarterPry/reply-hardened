@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "iMessage Reply Tracker",
+  "productName": "Repli",
   "version": "0.1.0",
-  "identifier": "com.seanrobins.imessage-offscript",
+  "identifier": "com.seanrobins.repli",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5174",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "iMessage Reply Tracker",
+        "title": "Repli",
         "width": 460,
         "height": 760,
         "minWidth": 380,
@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
     }
   },
   "bundle": {

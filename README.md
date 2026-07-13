@@ -1,13 +1,21 @@
-# iMessage Reply Tracker
+# Repli
 
-A minimal local menu bar tool that surfaces iMessage conversations
+A minimal macOS menu bar app that surfaces iMessage conversations
 where you owe someone a reply — and, in a second tab, conversations
-where someone owes you one. Instagram-notifications style: clean,
-scannable, just names and a single action.
+where someone owes you one. Clean, scannable, just names and a single
+action.
+
+**Privacy: nothing leaves your machine.** Repli reads two local
+databases (your Messages history and your address book), makes zero
+network calls, and has no analytics or telemetry of any kind. The
+only writes go to Repli's own small state file. You can verify all of
+this — it's why the code is open.
 
 ## How it works
 
-- Reads `~/Library/Messages/chat.db` **read-only** with `rusqlite`.
+- Reads `~/Library/Messages/chat.db` **read-only** with `rusqlite` —
+  the database is opened in place with SQLite's read-only flag and is
+  never copied, modified, or written to.
 - **Owe reply** tab: for each chat, finds the most recent real message;
   surfaces it if that message was inbound (`is_from_me = 0`). That
   covers both unread messages and "read but ghosted" threads. Oldest
@@ -15,33 +23,55 @@ scannable, just names and a single action.
   timestamps go amber at 3 days, red at 7.
 - **Waiting** tab: the inverse — threads where your last message has
   sat unanswered for at least 3 days. Follow-up radar.
-- Reacting to a message counts as replying: classic tapbacks
-  (2000-range), custom emoji tapbacks (4000-range, iOS 18+), and
-  stickers placed on a message (1000) all dismiss the row.
+- Reacting to a message **acknowledges** the thread rather than
+  clearing it: classic tapbacks (2000-range, incl. 2006 custom emoji),
+  custom emoji tapbacks (4000-range, iOS 18+), and stickers (1000)
+  demote the row — dimmed, sorted last, excluded from the badge
+  counts, labeled "You reacted — never replied" / "They reacted".
+  Removing a tapback (3000-range) reopens the thread. Exception: if
+  the last message contains a question mark, a tapback is not an
+  answer and the row stays fully open.
 - Junk never surfaces: chats Messages classifies as spam/promotions
-  (`is_filtered`), SMS-filter shadow chats (`(smsft)`/`(smsfp)`), and
-  blackholed/archived chats are excluded.
-- Group chats are treated as a single thread.
+  (`is_filtered`), SMS-filter shadow chats (`(smsft)`/`(smsfp)`),
+  blackholed/archived chats, and bare 5–6 digit short-code senders
+  (OTP/marketing) are all excluded.
+- Group chats are treated as a single thread, keyed by the chat's
+  guid. Unnamed groups get labels built from participant names.
 - Names resolve from `~/Library/Application Support/AddressBook/`
   (cached for 5 minutes) — falls back to phone number or email when
   no contact match is found.
 - Row actions: **check** marks it handled, **moon** snoozes the chat
   until 9am tomorrow, **bell-slash** mutes the chat permanently
-  (unmute from the footer). All state lives in a separate SQLite file
-  in the app's data directory; if the same contact messages you again,
+  (unmute from the footer). If the same contact messages you again,
   the row reappears.
+
+Every threshold and heuristic above (staleness window, waiting age,
+question-mark rule, demote-vs-clear, short-code range) is a documented
+constant in [`src-tauri/src/config.rs`](src-tauri/src/config.rs).
 
 ## Menu bar app
 
 The app lives in the menu bar — no dock icon. The tray icon shows the
-count of owed replies; left-click toggles the window, right-click has
-Quit. Closing the window hides it; the 30-second poll keeps the count
-current in the background.
+count of open owed replies; left-click toggles the window, right-click
+has Quit. Closing the window hides it; the 30-second poll keeps the
+count current in the background.
 
-## Stack
+## Architecture
 
-Tauri 2 (Rust) + React 18 + TypeScript + Vite. Same patterns as
-the Notable app.
+Tauri 2 (Rust) + React 18 + TypeScript + Vite.
+
+- `src-tauri/src/pending.rs` — the chat.db query: picks each chat's
+  last substantive message (tapbacks, stickers, and system events are
+  never candidates) and computes the acknowledged flag by pairing
+  reaction adds with later removals per reactor.
+- `src-tauri/src/replies.rs` — pure assembly: filtering (staleness,
+  short codes, snooze/mute/complete), name resolution, group labels.
+  No IO — everything is injectable, which is what makes it testable.
+- `src-tauri/src/state.rs` — Repli's own state (completed, snoozed,
+  muted) in a separate SQLite file in the app data directory.
+  `chat.db` is never written to.
+- `src-tauri/src/config.rs` — all behavioral constants.
+- `src/` — the React frontend; talks to Rust over Tauri IPC only.
 
 ## Prerequisites
 
@@ -52,8 +82,8 @@ the Notable app.
 ## Setup
 
 ```bash
-git clone https://github.com/srobins23/imessage-reply-tracker.git
-cd imessage-reply-tracker
+git clone https://github.com/srobins23/repli.git
+cd repli
 npm install
 ```
 
@@ -61,18 +91,21 @@ npm install
 
 ### Full Disk Access (required)
 
-This app reads files under `~/Library/`, which macOS protects behind
+Repli reads files under `~/Library/`, which macOS protects behind
 **Full Disk Access (FDA)**. The app detects FDA-blocked reads and
 shows an inline prompt — it does not crash.
 
 1. Open **System Settings → Privacy & Security → Full Disk Access**.
 2. Click the **+** button.
-3. Add the application(s) listed below for your situation:
+3. Add the application(s) for your situation:
    - **In dev:** add the terminal/IDE that runs `npm run tauri dev`
-     (e.g. Terminal.app, iTerm, VS Code, Cursor).
-   - **In a built app:** add `iMessage Reply Tracker.app` from the
-     bundle path printed by `npm run tauri build`.
-4. Quit the app fully and reopen it.
+     (e.g. Terminal.app, iTerm, VS Code, Cursor). This is the #1
+     stuck-point — the *parent process* needs FDA, not the app.
+   - **In a built app:** add `Repli.app` from the bundle path
+     printed by `npm run tauri build`.
+4. **Quit the app fully and reopen it** — via the tray icon's Quit,
+   not just closing the window (closing only hides it). This is the
+   #2 stuck-point: FDA takes effect on relaunch.
 
 The in-app prompt has an "Open Settings" button that jumps straight
 to the FDA pane.
@@ -92,6 +125,49 @@ npm run tauri dev      # dev mode with hot reload
 npm run tauri build    # production .app
 ```
 
+## Tests & contributing
+
+The state machine is covered by integration tests that run the real
+SQL and assembly pipeline against a **synthetic chat.db** — no test
+ever touches a real Messages database. One command:
+
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml
+```
+
+The fixture generator lives in
+[`src-tauri/tests/fixture/mod.rs`](src-tauri/tests/fixture/mod.rs):
+it builds a throwaway SQLite file with the Messages schema subset the
+app queries (chats, handles, messages, tapbacks, attributedBody
+blobs). If you're adding behavior, start by writing a fixture-backed
+test in `src-tauri/tests/state_machine.rs` that describes it.
+
+Before opening a PR:
+
+```bash
+npm run typecheck
+npm run lint
+cargo fmt    --manifest-path src-tauri/Cargo.toml
+cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+cargo test   --manifest-path src-tauri/Cargo.toml
+```
+
+## Limitations
+
+- **No group deep-linking.** macOS offers no URL scheme that opens an
+  existing group conversation, so Repli drives Messages' search field
+  with synthesized keystrokes. It's best-effort: it needs the
+  Accessibility permission and can mis-select when group names are
+  ambiguous.
+- **attributedBody decoding is partial.** On macOS 13+, message text
+  often lives in a typedstream-encoded `attributedBody` blob. Repli
+  extracts the first NSString payload, which covers normal texts but
+  can miss some edited or heavily formatted messages (those rows show
+  no preview).
+- **No sync.** Completed/snoozed/muted state is local to the machine.
+- **No compose surface.** Repli never sends messages; tap a row to
+  open the conversation in Messages.
+
 ## Distributing to other people
 
 The build is **unsigned**. macOS Gatekeeper will refuse to open an
@@ -110,20 +186,6 @@ Recipients also need to grant their own Full Disk Access — the app
 reads *their* `chat.db`, on their machine. Nothing ever leaves the
 device.
 
-## Useful checks
+## License
 
-```bash
-npm run typecheck                                          # tsc
-npm run lint                                               # eslint
-cargo fmt   --manifest-path src-tauri/Cargo.toml
-cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
-cargo test  --manifest-path src-tauri/Cargo.toml
-```
-
-## What the app does NOT do
-
-- It does not write to `chat.db`.
-- It does not send messages — there is no compose surface. Tap a row
-  to clear it from your list once you've replied elsewhere.
-- It does not sync across devices. Completed/snoozed/muted state
-  lives in the local app data directory.
+[MIT](LICENSE)

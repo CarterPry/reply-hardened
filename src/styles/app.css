@@ -227,6 +227,24 @@
   font-weight: 600;
 }
 
+/* Acknowledged rows: the thread was closed by a tapback, not a real
+   reply. Kept visible but visually demoted; the urgency colors on the
+   timestamp are muted along with everything else. */
+.row--acked {
+  opacity: 0.55;
+}
+
+.row--acked .row__time--aging,
+.row--acked .row__time--stale {
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+
+.row__ack {
+  flex-shrink: 0;
+  font-style: italic;
+}
+
 .row__actions {
   display: flex;
   align-items: center;

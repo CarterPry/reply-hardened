@@ -1,6 +1,6 @@
 use rusqlite::{params, Connection, OpenFlags};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::error::{AppError, AppResult};
 
@@ -32,6 +32,9 @@ pub struct PendingReplyRow {
     /// `message.attributedBody` for messages where text is NULL
     /// (common on macOS 13+).
     pub preview: Option<String>,
+    /// The relevant side already reacted (tapback/sticker) to this
+    /// last message — the thread is acknowledged but not replied to.
+    pub acknowledged: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -50,11 +53,18 @@ pub fn chat_db_path() -> PathBuf {
 }
 
 pub fn read_pending_replies(direction: Direction) -> AppResult<PendingResults> {
-    let path = chat_db_path();
+    read_pending_replies_at(&chat_db_path(), direction)
+}
 
+/// Same as `read_pending_replies` but against an explicit database
+/// path. This is the entry point the test suite uses to run the real
+/// queries against a synthetic fixture db — the production path never
+/// varies, but the logic must be testable without touching the user's
+/// actual chat.db.
+pub fn read_pending_replies_at(path: &Path, direction: Direction) -> AppResult<PendingResults> {
     // Surface FDA failures as a structured PermissionDenied before we
     // ever touch sqlite — the underlying errors aren't always clear.
-    match std::fs::metadata(&path) {
+    match std::fs::metadata(path) {
         Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err(AppError::NotFound {
@@ -82,7 +92,7 @@ pub fn read_pending_replies(direction: Direction) -> AppResult<PendingResults> {
     }
 
     let conn = Connection::open_with_flags(
-        &path,
+        path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|e| {
@@ -109,8 +119,9 @@ fn run_pending_query(conn: &Connection, direction: Direction) -> AppResult<Vec<P
     // For each chat, pick the single most recent real message — text
     // or attachment, not a tapback/sticker reaction or a system event
     // (joins, renames). Surface chats whose last real message came
-    // from the queried side AND the other side hasn't already reacted
-    // to it. member_count comes from chat_handle_join, which excludes
+    // from the queried side, flagging whether the other side has
+    // reacted to it (`acknowledged`).
+    // member_count comes from chat_handle_join, which excludes
     // the user's own handle — so 1:1 chats have member_count = 1.
     //
     // Filter rationale:
@@ -129,19 +140,28 @@ fn run_pending_query(conn: &Connection, direction: Direction) -> AppResult<Vec<P
     //                                    is_filtered = 0 despite being
     //                                    filter-category duplicates
     //
-    // Reaction dismissal: a reaction row points at its target via
+    // Acknowledgment: a reaction row points at its target via
     // associated_message_guid, stored as either the bare guid or a
     // `p:N/<guid>` / `bp:<guid>` prefix. Reaction "add" types:
     //   1000       — sticker placed on a message
-    //   2000–2999  — classic tapbacks (love/like/…, incl. 2006/2007)
-    //   4000–4999  — custom emoji tapbacks (iOS 18+)
-    // Removal types (3000–3999) are intentionally ignored — if you
-    // remove your reaction, mark complete manually.
+    //   2000–2999  — classic tapbacks (love/like/…, incl. 2006 custom
+    //                emoji reactions)
+    //   4000–4999  — custom emoji tapbacks (iOS 18+ variant)
+    // Removal types are the add value + 1000 (2000→3000, 2006→3006,
+    // 4000→5000). An add counts only while no LATER removal of the
+    // same type from the same reactor targets the same message —
+    // add-then-remove returns the thread to open; re-adding
+    // acknowledges again. Stickers (1000) have no removal pairing
+    // (1000+1000=2000 would collide with the love tapback).
     //
     // For Owed we look for the user's reaction (is_from_me = 1) on the
     // latest inbound message; for Waiting, the other party's reaction
-    // (is_from_me = 0) on the latest outbound message — either way a
-    // reaction counts as the thread being answered.
+    // (is_from_me = 0) on the latest outbound message. A reaction does
+    // NOT remove the row — it marks it `acknowledged`, which the UI
+    // demotes and badge counts exclude. The question-mark exception
+    // (a tapback on a question is not an answer) is applied in Rust
+    // after the preview text is extracted, since the text may live in
+    // attributedBody.
     let (last_from_me, reactor_from_me) = match direction {
         Direction::Owed => (0i64, 1i64),
         Direction::Waiting => (1i64, 0i64),
@@ -180,7 +200,45 @@ fn run_pending_query(conn: &Connection, direction: Direction) -> AppResult<Vec<P
             r.msg_date                   AS last_message_date,
             win_msg.text                 AS msg_text,
             win_msg.attributedBody       AS msg_attributed_body,
-            COALESCE(mc.member_count, 0) AS member_count
+            COALESCE(mc.member_count, 0) AS member_count,
+            CASE WHEN EXISTS (
+                SELECT 1
+                FROM message rx
+                JOIN chat_message_join cmj2 ON cmj2.message_id = rx.ROWID
+                WHERE cmj2.chat_id = r.chat_id
+                  AND rx.is_from_me = ?2
+                  AND (
+                      rx.associated_message_type = 1000
+                      OR (rx.associated_message_type >= 2000
+                          AND rx.associated_message_type < 3000)
+                      OR (rx.associated_message_type >= 4000
+                          AND rx.associated_message_type < 5000)
+                  )
+                  AND (
+                      rx.associated_message_guid = r.msg_guid
+                      OR rx.associated_message_guid LIKE '%/' || r.msg_guid
+                      OR rx.associated_message_guid LIKE '%:' || r.msg_guid
+                  )
+                  AND (
+                      rx.associated_message_type < 2000
+                      OR NOT EXISTS (
+                          SELECT 1
+                          FROM message rm
+                          JOIN chat_message_join cmj3 ON cmj3.message_id = rm.ROWID
+                          WHERE cmj3.chat_id = r.chat_id
+                            AND rm.is_from_me = rx.is_from_me
+                            AND COALESCE(rm.handle_id, 0) = COALESCE(rx.handle_id, 0)
+                            AND rm.associated_message_type = rx.associated_message_type + 1000
+                            AND (
+                                rm.associated_message_guid = r.msg_guid
+                                OR rm.associated_message_guid LIKE '%/' || r.msg_guid
+                                OR rm.associated_message_guid LIKE '%:' || r.msg_guid
+                            )
+                            AND (rm.date > rx.date
+                                 OR (rm.date = rx.date AND rm.ROWID > rx.ROWID))
+                      )
+                  )
+            ) THEN 1 ELSE 0 END AS acknowledged
         FROM ranked r
         JOIN chat c                ON c.ROWID = r.chat_id
         JOIN message win_msg       ON win_msg.ROWID = r.msg_rowid
@@ -191,25 +249,6 @@ fn run_pending_query(conn: &Connection, direction: Direction) -> AppResult<Vec<P
           AND COALESCE(c.is_blackholed, 0) = 0
           AND COALESCE(c.is_archived, 0) = 0
           AND c.chat_identifier NOT LIKE '%(smsf%'
-          AND NOT EXISTS (
-              SELECT 1
-              FROM message rx
-              JOIN chat_message_join cmj2 ON cmj2.message_id = rx.ROWID
-              WHERE cmj2.chat_id = r.chat_id
-                AND rx.is_from_me = ?2
-                AND (
-                    rx.associated_message_type = 1000
-                    OR (rx.associated_message_type >= 2000
-                        AND rx.associated_message_type < 3000)
-                    OR (rx.associated_message_type >= 4000
-                        AND rx.associated_message_type < 5000)
-                )
-                AND (
-                    rx.associated_message_guid = r.msg_guid
-                    OR rx.associated_message_guid LIKE '%/' || r.msg_guid
-                    OR rx.associated_message_guid LIKE '%:' || r.msg_guid
-                )
-          )
         ORDER BY r.msg_date ASC
     "#;
 
@@ -221,6 +260,16 @@ fn run_pending_query(conn: &Connection, direction: Direction) -> AppResult<Vec<P
         let preview = text
             .filter(|s| !s.is_empty())
             .or_else(|| body.as_deref().and_then(extract_attributed_body_text));
+        let mut acknowledged: bool = row.get::<_, i64>("acknowledged")? != 0;
+        // Question-mark exception: a tapback on a question is not an
+        // answer. The last substantive message asked something, so the
+        // thread stays fully open regardless of reactions.
+        if crate::config::QUESTION_MARK_KEEPS_OPEN
+            && acknowledged
+            && preview.as_deref().is_some_and(|p| p.contains('?'))
+        {
+            acknowledged = false;
+        }
         Ok(PendingReplyRow {
             chat_rowid: row.get("chat_rowid")?,
             chat_guid: row.get("chat_guid")?,
@@ -232,6 +281,7 @@ fn run_pending_query(conn: &Connection, direction: Direction) -> AppResult<Vec<P
             last_message_timestamp_unix: apple_to_unix(date_raw),
             member_count: row.get("member_count")?,
             preview,
+            acknowledged,
         })
     })?;
 

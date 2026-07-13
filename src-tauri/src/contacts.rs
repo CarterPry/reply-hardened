@@ -22,6 +22,22 @@ pub struct ContactDirectory {
 }
 
 impl ContactDirectory {
+    /// Register a phone → name mapping directly (keyed by 10-digit
+    /// tail, same as the AddressBook loader). Lets tests build a
+    /// directory without an AddressBook on disk.
+    pub fn insert_phone(&mut self, phone: &str, name: &str) {
+        let key = phone_tail(phone);
+        if !key.is_empty() {
+            self.by_phone_tail.insert(key, name.to_string());
+        }
+    }
+
+    /// Register an email → name mapping directly. Test/support hook.
+    pub fn insert_email(&mut self, email: &str, name: &str) {
+        self.by_email
+            .insert(email.trim().to_lowercase(), name.to_string());
+    }
+
     pub fn lookup(&self, handle: &str) -> Option<&str> {
         let h = handle.trim();
         if h.is_empty() {
