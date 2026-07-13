@@ -2,7 +2,8 @@ use crate::contacts;
 use crate::error::AppResult;
 use crate::pending::{self, Direction};
 use crate::replies::{self, AssembleCtx, PendingReply};
-use crate::state::{MutedChat, StateStore};
+use crate::state::{DoneItem, MutedChat, StateStore, UndoOutcome};
+use crate::unknown::{self, UnknownSender};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, State};
 
@@ -30,8 +31,16 @@ pub fn get_replies(
 
 fn replies_inner(state: &StateStore, direction: Direction) -> AppResult<Vec<PendingReply>> {
     let results = pending::read_pending_replies(direction)?;
+    // chat.db was just readable, so the legacy done-state migration
+    // (which needs it to map message guids → chats) can run. No-ops
+    // once the legacy table is gone.
+    match state.migrate_legacy_completed(&pending::chat_db_path()) {
+        Ok(n) if n > 0 => log::info!("migrated {n} legacy done markers"),
+        Ok(_) => {}
+        Err(e) => log::warn!("legacy done migration failed, will retry: {e}"),
+    }
     let dir = contacts::load_cached();
-    let completed = state.completed_guids()?;
+    let done = state.done_map()?;
     let snoozed = state.snoozed_until()?;
     let muted: std::collections::HashSet<String> = state
         .muted_chats()?
@@ -45,7 +54,7 @@ fn replies_inner(state: &StateStore, direction: Direction) -> AppResult<Vec<Pend
 
     let ctx = AssembleCtx {
         dir: &dir,
-        completed: &completed,
+        done: &done,
         snoozed: &snoozed,
         muted: &muted,
         now,
@@ -74,21 +83,82 @@ fn update_tray_count(app: &AppHandle, count: usize) {
     }
 }
 
+/// People messaging you who aren't in Contacts: 1:1 threads with an
+/// unknown handle, newest activity first. Shares the done/snooze/mute
+/// state with the reply lists.
 #[tauri::command]
-pub fn mark_complete(state: State<'_, StateStore>, last_message_guid: String) -> AppResult<()> {
-    state.mark_complete(&last_message_guid)
+pub fn get_unknown_senders(state: State<'_, StateStore>) -> AppResult<Vec<UnknownSender>> {
+    let rows = unknown::read_unknown_senders(&pending::chat_db_path())?;
+    let dir = contacts::load_cached();
+    let done = state.done_map()?;
+    let snoozed = state.snoozed_until()?;
+    let muted: std::collections::HashSet<String> = state
+        .muted_chats()?
+        .into_iter()
+        .map(|m| m.chat_guid)
+        .collect();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    Ok(unknown::assemble_unknown(
+        rows, &dir, &done, &snoozed, &muted, now,
+    ))
 }
 
-/// Hide a chat from both lists until `until` (unix seconds).
+/// Hand a handle to Contacts as a prefilled new-contact card. macOS has
+/// no URL scheme for "add contact", so we write a one-field vCard to a
+/// temp file and `open` it - Contacts shows its import/add flow.
 #[tauri::command]
-pub fn snooze_chat(state: State<'_, StateStore>, chat_guid: String, until: i64) -> AppResult<()> {
-    state.snooze_chat(&chat_guid, until)
+pub fn add_to_contacts(handle: String) -> Result<(), String> {
+    let h = handle.trim();
+    if h.is_empty() {
+        return Err("no handle to add".to_string());
+    }
+    let field = if h.contains('@') {
+        format!("EMAIL;TYPE=INTERNET:{h}")
+    } else {
+        format!("TEL;TYPE=CELL:{h}")
+    };
+    let vcf = format!("BEGIN:VCARD\r\nVERSION:3.0\r\nFN:{h}\r\n{field}\r\nEND:VCARD\r\n");
+    let path = std::env::temp_dir().join("repli-new-contact.vcf");
+    std::fs::write(&path, vcf).map_err(|e| format!("writing vcard: {e}"))?;
+    std::process::Command::new("open")
+        .arg(&path)
+        .status()
+        .map(|_| ())
+        .map_err(|e| format!("opening vcard: {e}"))
 }
 
-/// Permanently hide a chat. `name` is captured for the unmute UI.
+/// Mark chats done. Always takes a batch (a single row is a batch of
+/// one) so a bulk action lands as ONE undo entry.
 #[tauri::command]
-pub fn mute_chat(state: State<'_, StateStore>, chat_guid: String, name: String) -> AppResult<()> {
-    state.mute_chat(&chat_guid, &name)
+pub fn mark_done(state: State<'_, StateStore>, items: Vec<DoneItem>) -> AppResult<()> {
+    state.mark_done(&items)
+}
+
+/// Hide chats from both lists until `until` (unix seconds).
+#[tauri::command]
+pub fn snooze_chats(
+    state: State<'_, StateStore>,
+    chat_guids: Vec<String>,
+    until: i64,
+) -> AppResult<()> {
+    state.snooze_chats(&chat_guids, until)
+}
+
+/// Permanently hide chats. Names are captured for the unmute UI.
+#[tauri::command]
+pub fn mute_chats(state: State<'_, StateStore>, chats: Vec<MutedChat>) -> AppResult<()> {
+    state.mute_chats(&chats)
+}
+
+/// Reverse the most recent triage action (single or bulk). Returns
+/// what was undone so the UI can describe it, or None if the log is
+/// empty.
+#[tauri::command]
+pub fn undo_last(state: State<'_, StateStore>) -> AppResult<Option<UndoOutcome>> {
+    state.undo_last()
 }
 
 #[tauri::command]

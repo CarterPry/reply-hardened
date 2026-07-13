@@ -1,44 +1,94 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Row } from './components/Row';
+import { UnknownRow } from './components/UnknownRow';
 import { PermissionPrompt } from './components/PermissionPrompt';
 import {
+  addToContacts,
   getReplies,
+  getUnknownSenders,
   isAppError,
   listMuted,
-  markComplete,
-  muteChat,
+  markDone,
+  muteChats,
   openAccessibilitySettings,
   openAutomationSettings,
   openChat,
   openFdaSettings,
-  snoozeChat,
+  snoozeChats,
+  undoLast,
   unmuteChat,
 } from './lib/api';
 import { ageTier, formatRelative, nextMorning } from './lib/format';
 import { notifyNew } from './lib/notifications';
-import type { AppError, MutedChat, PendingReply, ReplyMode } from './lib/types';
+import type {
+  AppError,
+  MutedChat,
+  PendingReply,
+  UnknownSender,
+  ViewMode,
+} from './lib/types';
 
 const POLL_MS = 30_000;
+/** How long the post-action toast stays up. ⌘Z reaches much further
+ *  back (the persisted action log), the toast is just the affordance. */
+const TOAST_MS = 5_000;
 
 interface Lists {
   owed: PendingReply[];
   waiting: PendingReply[];
 }
 
+/** Anything a list can render and a triage action can target. */
+type ListItem = PendingReply | UnknownSender;
+
+type TriageKind = 'done' | 'snooze' | 'mute';
+
 /** Which permission the group-chat opener was denied, if any. */
 type PermissionBanner = 'accessibility' | 'automation' | null;
 
+interface Toast {
+  message: string;
+  canUndo: boolean;
+}
+
+function isReply(item: ListItem): item is PendingReply {
+  return 'lastMessageGuid' in item;
+}
+
+/** The date of the item's last real message - what mark-done pins. */
+function messageDateOf(item: ListItem): number {
+  return isReply(item) ? item.timestamp : item.lastDate;
+}
+
+function displayNameOf(item: ListItem): string {
+  return isReply(item) ? item.name : item.handle;
+}
+
+/** Click modifiers a row forwards so the list can pick between open,
+ *  toggle-select (⌘) and range-select (⇧). */
+export interface PressMods {
+  metaKey: boolean;
+  shiftKey: boolean;
+}
+
 export function App() {
-  const [mode, setMode] = useState<ReplyMode>('owed');
+  const [mode, setMode] = useState<ViewMode>('owed');
   const [lists, setLists] = useState<Lists>({ owed: [], waiting: [] });
+  const [unknown, setUnknown] = useState<UnknownSender[]>([]);
   const [muted, setMuted] = useState<MutedChat[]>([]);
   const [showMuted, setShowMuted] = useState(false);
   const [banner, setBanner] = useState<PermissionBanner>(null);
   const [error, setError] = useState<AppError | null>(null);
   const [loading, setLoading] = useState(true);
   const [removing, setRemoving] = useState<Set<string>>(new Set());
-  /** lastMessageGuids of rows selected for a bulk action. */
+  /** chatGuids of rows selected for a bulk action (rows are unique per
+   *  chat in every list). */
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [toast, setToast] = useState<Toast | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
+  /** Index of the last individually-toggled row - the anchor a
+   *  shift-click extends from, standard macOS list behavior. */
+  const anchorIndexRef = useRef<number | null>(null);
   /** Tracks the set of lastMessageGuids we've already shown to the user.
    *  Stays null until the first successful load - so the very first
    *  result doesn't trigger a flood of notifications. Only the owed
@@ -51,14 +101,21 @@ export function App() {
   const fetchSeqRef = useRef(0);
 
   const applyResults = useCallback(
-    (owed: PendingReply[], waiting: PendingReply[], mutedList: MutedChat[]) => {
+    (
+      owed: PendingReply[],
+      waiting: PendingReply[],
+      unknownList: UnknownSender[],
+      mutedList: MutedChat[],
+    ) => {
       setLists({ owed, waiting });
+      setUnknown(unknownList);
       setMuted(mutedList);
       setError(null);
       // Drop selections for rows that vanished in this refresh.
       const alive = new Set([
-        ...owed.map((x) => x.lastMessageGuid),
-        ...waiting.map((x) => x.lastMessageGuid),
+        ...owed.map((x) => x.chatGuid),
+        ...waiting.map((x) => x.chatGuid),
+        ...unknownList.map((x) => x.chatGuid),
       ]);
       setSelected((prev) => {
         const next = new Set([...prev].filter((g) => alive.has(g)));
@@ -84,19 +141,28 @@ export function App() {
     setError(isAppError(e) ? e : { kind: 'other', message: String(e) });
   }, []);
 
+  const fetchAll = useCallback(
+    () =>
+      Promise.all([
+        getReplies('owed'),
+        getReplies('waiting'),
+        getUnknownSenders(),
+        listMuted(),
+      ]),
+    [],
+  );
+
   const refreshAll = useCallback(async () => {
     const seq = ++fetchSeqRef.current;
     try {
-      const [owed, waiting, mutedList] = await Promise.all([
-        getReplies('owed'),
-        getReplies('waiting'),
-        listMuted(),
-      ]);
-      if (seq === fetchSeqRef.current) applyResults(owed, waiting, mutedList);
+      const [owed, waiting, unknownList, mutedList] = await fetchAll();
+      if (seq === fetchSeqRef.current) {
+        applyResults(owed, waiting, unknownList, mutedList);
+      }
     } catch (e) {
       if (seq === fetchSeqRef.current) handleError(e);
     }
-  }, [applyResults, handleError]);
+  }, [fetchAll, applyResults, handleError]);
 
   const retry = useCallback(async () => {
     setLoading(true);
@@ -107,10 +173,10 @@ export function App() {
   useEffect(() => {
     let active = true;
     const seq = ++fetchSeqRef.current;
-    Promise.all([getReplies('owed'), getReplies('waiting'), listMuted()])
-      .then(([owed, waiting, mutedList]) => {
+    fetchAll()
+      .then(([owed, waiting, unknownList, mutedList]) => {
         if (active && seq === fetchSeqRef.current) {
-          applyResults(owed, waiting, mutedList);
+          applyResults(owed, waiting, unknownList, mutedList);
         }
       })
       .catch((e) => {
@@ -122,7 +188,7 @@ export function App() {
     return () => {
       active = false;
     };
-  }, [applyResults, handleError]);
+  }, [fetchAll, applyResults, handleError]);
 
   // Refresh when the window regains focus or the document becomes visible.
   useEffect(() => {
@@ -149,56 +215,208 @@ export function App() {
     return () => window.clearInterval(id);
   }, [refreshAll]);
 
-  /** Run `action`, then animate the row out of both lists. */
-  const dismiss = useCallback(
-    async (item: PendingReply, action: () => Promise<void>) => {
-      setRemoving((prev) => new Set(prev).add(item.lastMessageGuid));
+  const showToast = useCallback((message: string, canUndo: boolean) => {
+    if (toastTimerRef.current !== null) {
+      window.clearTimeout(toastTimerRef.current);
+    }
+    setToast({ message, canUndo });
+    toastTimerRef.current = window.setTimeout(() => {
+      setToast(null);
+      toastTimerRef.current = null;
+    }, TOAST_MS);
+  }, []);
+
+  /** Run one triage action against `targets` as a SINGLE backend call
+   *  (one undo entry), animating the rows out together. Failures put
+   *  the rows back via a resync. */
+  const triage = useCallback(
+    async (kind: TriageKind, targets: ListItem[]) => {
+      if (targets.length === 0) return;
+      const guids = targets.map((x) => x.chatGuid);
+      setRemoving((prev) => new Set([...prev, ...guids]));
+      setSelected(new Set());
+      anchorIndexRef.current = null;
       try {
-        await action();
+        if (kind === 'done') {
+          await markDone(
+            targets.map((x) => ({
+              chatGuid: x.chatGuid,
+              messageDate: messageDateOf(x),
+            })),
+          );
+        } else if (kind === 'snooze') {
+          await snoozeChats(guids, nextMorning());
+        } else {
+          await muteChats(
+            targets.map((x) => ({
+              chatGuid: x.chatGuid,
+              name: displayNameOf(x),
+            })),
+          );
+          setMuted(await listMuted());
+        }
       } catch (e) {
-        console.error('dismiss failed', e);
+        console.error(`${kind} failed`, e);
         setRemoving((prev) => {
           const next = new Set(prev);
-          next.delete(item.lastMessageGuid);
+          guids.forEach((g) => next.delete(g));
           return next;
         });
+        refreshAll();
         return;
       }
-      // Tell the seen-set we no longer have this one so a future
-      // revival (a new guid) is correctly detected as "new".
-      seenGuidsRef.current?.delete(item.lastMessageGuid);
+      // Tell the seen-set we no longer have these so a future revival
+      // (a new message) is correctly detected as "new".
+      targets.forEach((x) => {
+        if (isReply(x)) seenGuidsRef.current?.delete(x.lastMessageGuid);
+      });
+      const n = targets.length;
+      const label =
+        kind === 'done'
+          ? n > 1
+            ? `Marked ${n} done`
+            : 'Marked done'
+          : kind === 'snooze'
+            ? n > 1
+              ? `Snoozed ${n} until 9am`
+              : 'Snoozed until 9am'
+            : n > 1
+              ? `Muted ${n}`
+              : 'Muted';
+      showToast(label, true);
       setTimeout(() => {
+        const gone = new Set(guids);
         setLists((prev) => ({
-          owed: prev.owed.filter((x) => x.lastMessageGuid !== item.lastMessageGuid),
-          waiting: prev.waiting.filter((x) => x.lastMessageGuid !== item.lastMessageGuid),
+          owed: prev.owed.filter((x) => !gone.has(x.chatGuid)),
+          waiting: prev.waiting.filter((x) => !gone.has(x.chatGuid)),
         }));
+        setUnknown((prev) => prev.filter((x) => !gone.has(x.chatGuid)));
         setRemoving((prev) => {
           const next = new Set(prev);
-          next.delete(item.lastMessageGuid);
+          guids.forEach((g) => next.delete(g));
           return next;
         });
       }, 340);
     },
-    [],
+    [refreshAll, showToast],
   );
 
-  const onComplete = useCallback(
-    (item: PendingReply) => dismiss(item, () => markComplete(item.lastMessageGuid)),
-    [dismiss],
+  const undo = useCallback(async () => {
+    if (toastTimerRef.current !== null) {
+      window.clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
+    setToast(null);
+    try {
+      const outcome = await undoLast();
+      if (!outcome) return;
+      await refreshAll();
+      showToast(
+        outcome.count > 1 ? `Restored ${outcome.count} chats` : 'Restored',
+        false,
+      );
+    } catch (e) {
+      console.error('undo failed', e);
+    }
+  }, [refreshAll, showToast]);
+
+  const visible: ListItem[] = mode === 'unknown' ? unknown : lists[mode];
+
+  const clearSelection = useCallback(() => {
+    setSelected(new Set());
+    anchorIndexRef.current = null;
+  }, []);
+
+  const toggleSelect = useCallback((item: ListItem, index: number) => {
+    anchorIndexRef.current = index;
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(item.chatGuid)) {
+        next.delete(item.chatGuid);
+      } else {
+        next.add(item.chatGuid);
+      }
+      return next;
+    });
+  }, []);
+
+  /** Shift-click: select the whole range between the anchor and the
+   *  clicked row (inclusive), keeping whatever else was selected. */
+  const rangeSelect = useCallback(
+    (index: number) => {
+      const anchor = anchorIndexRef.current ?? index;
+      const [lo, hi] = anchor <= index ? [anchor, index] : [index, anchor];
+      setSelected((prev) => {
+        const next = new Set(prev);
+        for (let i = lo; i <= hi; i++) {
+          const item = visible[i];
+          if (item) next.add(item.chatGuid);
+        }
+        return next;
+      });
+    },
+    [visible],
   );
 
-  const onSnooze = useCallback(
-    (item: PendingReply) => dismiss(item, () => snoozeChat(item.chatGuid, nextMorning())),
-    [dismiss],
+  const handlePress = useCallback(
+    (item: ListItem, index: number, mods: PressMods) => {
+      if (mods.shiftKey) {
+        rangeSelect(index);
+      } else if (mods.metaKey || selected.size > 0) {
+        toggleSelect(item, index);
+      } else if (isReply(item)) {
+        openChat(item.handle, item.isGroup, item.chatGuid, item.searchHint).catch(
+          (e) => {
+            const msg = String(e);
+            if (msg.includes('accessibility_denied')) {
+              setBanner('accessibility');
+            } else if (msg.includes('automation_denied')) {
+              setBanner('automation');
+            } else {
+              console.error('open_chat failed', e);
+            }
+          },
+        );
+      } else {
+        openChat(item.handle, false, item.chatGuid, item.handle).catch((e) =>
+          console.error('open_chat failed', e),
+        );
+      }
+    },
+    [selected, rangeSelect, toggleSelect],
   );
 
-  const onMute = useCallback(
-    (item: PendingReply) =>
-      dismiss(item, async () => {
-        await muteChat(item.chatGuid, item.name);
-        setMuted(await listMuted());
-      }),
-    [dismiss],
+  /** Switch tabs and drop the selection - it belongs to one list. */
+  const switchMode = useCallback(
+    (next: ViewMode) => {
+      setMode(next);
+      clearSelection();
+    },
+    [clearSelection],
+  );
+
+  // Esc clears selection; ⌘Z undoes; ⌘A selects all visible rows in
+  // the current tab (filtered-out rows are not in `visible`, so they
+  // are never swept in).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        clearSelection();
+      } else if (e.metaKey && !e.shiftKey && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        undo();
+      } else if (e.metaKey && e.key.toLowerCase() === 'a') {
+        e.preventDefault();
+        setSelected(new Set(visible.map((x) => x.chatGuid)));
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [clearSelection, undo, visible]);
+
+  const bulkTargets = useCallback(
+    () => visible.filter((x) => selected.has(x.chatGuid)),
+    [visible, selected],
   );
 
   const onUnmute = useCallback(
@@ -213,106 +431,13 @@ export function App() {
     [refreshAll],
   );
 
-  const toggleSelect = useCallback((item: PendingReply) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(item.lastMessageGuid)) {
-        next.delete(item.lastMessageGuid);
-      } else {
-        next.add(item.lastMessageGuid);
-      }
-      return next;
-    });
+  const onAddToContacts = useCallback((item: UnknownSender) => {
+    addToContacts(item.handle).catch((e) =>
+      console.error('add_to_contacts failed', e),
+    );
   }, []);
 
-  const clearSelection = useCallback(() => setSelected(new Set()), []);
-
-  /** Switch tabs and drop the selection - it belongs to one list. */
-  const switchMode = useCallback(
-    (next: ReplyMode) => {
-      setMode(next);
-      clearSelection();
-    },
-    [clearSelection],
-  );
-
-  // Escape cancels the selection.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') clearSelection();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [clearSelection]);
-
-  /** Apply one action to every selected row, animating them out
-   *  together. Failures put the rows back and force a resync. */
-  const bulkAct = useCallback(
-    async (action: (item: PendingReply) => Promise<void>) => {
-      const targets = lists[mode].filter((x) => selected.has(x.lastMessageGuid));
-      if (targets.length === 0) return;
-      const guids = targets.map((x) => x.lastMessageGuid);
-      setRemoving((prev) => new Set([...prev, ...guids]));
-      clearSelection();
-      const results = await Promise.allSettled(targets.map((item) => action(item)));
-      const failed = results.some((r) => r.status === 'rejected');
-      if (failed) {
-        console.error('bulk action partially failed', results);
-      }
-      guids.forEach((g) => seenGuidsRef.current?.delete(g));
-      setTimeout(() => {
-        const gone = new Set(guids);
-        setLists((prev) => ({
-          owed: prev.owed.filter((x) => !gone.has(x.lastMessageGuid)),
-          waiting: prev.waiting.filter((x) => !gone.has(x.lastMessageGuid)),
-        }));
-        setRemoving((prev) => {
-          const next = new Set(prev);
-          guids.forEach((g) => next.delete(g));
-          return next;
-        });
-        // On any failure, resync from the source of truth so rows the
-        // action missed come back instead of silently disappearing.
-        if (failed) refreshAll();
-      }, 340);
-    },
-    [lists, mode, selected, clearSelection, refreshAll],
-  );
-
-  const onBulkComplete = useCallback(
-    () => bulkAct((item) => markComplete(item.lastMessageGuid)),
-    [bulkAct],
-  );
-
-  const onBulkSnooze = useCallback(() => {
-    const until = nextMorning();
-    return bulkAct((item) => snoozeChat(item.chatGuid, until));
-  }, [bulkAct]);
-
-  const onBulkMute = useCallback(
-    () =>
-      bulkAct(async (item) => {
-        await muteChat(item.chatGuid, item.name);
-      }).then(async () => {
-        setMuted(await listMuted());
-      }),
-    [bulkAct],
-  );
-
-  const onOpen = useCallback((item: PendingReply) => {
-    openChat(item.handle, item.isGroup, item.chatGuid, item.searchHint).catch((e) => {
-      const msg = String(e);
-      if (msg.includes('accessibility_denied')) {
-        setBanner('accessibility');
-      } else if (msg.includes('automation_denied')) {
-        setBanner('automation');
-      } else {
-        console.error('open_chat failed', e);
-      }
-    });
-  }, []);
-
-  const items = lists[mode];
+  const selCount = selected.size;
 
   return (
     <div className="container">
@@ -330,6 +455,12 @@ export function App() {
             count={lists.waiting.filter((x) => !x.acknowledged).length}
             active={mode === 'waiting'}
             onClick={() => switchMode('waiting')}
+          />
+          <TabButton
+            label="Unknown"
+            count={unknown.length}
+            active={mode === 'unknown'}
+            onClick={() => switchMode('unknown')}
           />
         </nav>
       </header>
@@ -373,61 +504,92 @@ export function App() {
           />
         ) : error ? (
           <ErrorBox error={error} onRetry={retry} />
-        ) : items.length === 0 ? (
+        ) : visible.length === 0 ? (
           mode === 'owed' ? (
             <div className="empty">
               <div className="empty__title">All clear</div>
               <p>No conversations are waiting on you.</p>
             </div>
-          ) : (
+          ) : mode === 'waiting' ? (
             <div className="empty">
               <div className="empty__title">Nothing outstanding</div>
               <p>No unanswered messages older than 3 days.</p>
             </div>
+          ) : (
+            <div className="empty">
+              <div className="empty__title">No unknown senders</div>
+              <p>Everyone who messaged you recently is in your Contacts.</p>
+            </div>
           )
         ) : (
           <ul className="list">
-            {items.map((item) => (
-              <Row
-                key={item.lastMessageGuid}
-                item={item}
-                ackLabel={
-                  item.acknowledged
-                    ? mode === 'owed'
-                      ? 'You reacted, never replied'
-                      : 'They reacted'
-                    : null
-                }
-                relative={formatRelative(item.timestamp)}
-                tier={ageTier(item.timestamp)}
-                removing={removing.has(item.lastMessageGuid)}
-                selected={selected.has(item.lastMessageGuid)}
-                selectionActive={selected.size > 0}
-                onComplete={() => onComplete(item)}
-                onSnooze={() => onSnooze(item)}
-                onMute={() => onMute(item)}
-                onOpen={() => onOpen(item)}
-                onToggleSelect={() => toggleSelect(item)}
-              />
-            ))}
+            {mode === 'unknown'
+              ? unknown.map((item, index) => (
+                  <UnknownRow
+                    key={item.chatGuid}
+                    item={item}
+                    relative={formatRelative(item.lastDate)}
+                    firstRelative={formatRelative(item.firstDate)}
+                    removing={removing.has(item.chatGuid)}
+                    selected={selected.has(item.chatGuid)}
+                    onPress={(mods) => handlePress(item, index, mods)}
+                    onToggleSelect={(mods) =>
+                      mods.shiftKey ? rangeSelect(index) : toggleSelect(item, index)
+                    }
+                    onComplete={() => triage('done', [item])}
+                    onAddToContacts={() => onAddToContacts(item)}
+                  />
+                ))
+              : lists[mode].map((item, index) => (
+                  <Row
+                    key={item.chatGuid}
+                    item={item}
+                    ackLabel={
+                      item.acknowledged
+                        ? mode === 'owed'
+                          ? 'You reacted, never replied'
+                          : 'They reacted'
+                        : null
+                    }
+                    relative={formatRelative(item.timestamp)}
+                    tier={ageTier(item.timestamp)}
+                    removing={removing.has(item.chatGuid)}
+                    selected={selected.has(item.chatGuid)}
+                    onPress={(mods) => handlePress(item, index, mods)}
+                    onToggleSelect={(mods) =>
+                      mods.shiftKey ? rangeSelect(index) : toggleSelect(item, index)
+                    }
+                    onComplete={() => triage('done', [item])}
+                    onSnooze={() => triage('snooze', [item])}
+                    onMute={() => triage('mute', [item])}
+                  />
+                ))}
           </ul>
         )}
-        {selected.size > 0 && (
+        {selCount > 0 && (
           <div className="selection-bar">
-            <span className="selection-bar__count">{selected.size} selected</span>
+            <span className="selection-bar__count">{selCount} selected</span>
             <div className="selection-bar__actions">
-              <button className="btn btn--small" type="button" onClick={onBulkSnooze}>
-                Snooze
+              <button
+                className="btn btn--small"
+                type="button"
+                onClick={() => triage('snooze', bulkTargets())}
+              >
+                Snooze {selCount}
               </button>
-              <button className="btn btn--small" type="button" onClick={onBulkMute}>
-                Mute
+              <button
+                className="btn btn--small"
+                type="button"
+                onClick={() => triage('mute', bulkTargets())}
+              >
+                Mute {selCount}
               </button>
               <button
                 className="btn btn--small btn--primary"
                 type="button"
-                onClick={onBulkComplete}
+                onClick={() => triage('done', bulkTargets())}
               >
-                Done
+                Mark {selCount} done
               </button>
               <button
                 className="btn btn--small"
@@ -438,6 +600,16 @@ export function App() {
                 ✕
               </button>
             </div>
+          </div>
+        )}
+        {toast && (
+          <div className="toast" role="status">
+            <span className="toast__message">{toast.message}</span>
+            {toast.canUndo && (
+              <button className="btn btn--small" type="button" onClick={undo}>
+                Undo
+              </button>
+            )}
           </div>
         )}
         {!loading && !error && muted.length > 0 && (

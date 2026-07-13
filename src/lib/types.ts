@@ -33,9 +33,41 @@ export interface MutedChat {
   name: string;
 }
 
+/** One "mark done" target: the chat plus the date (unix seconds) of
+ *  its last real message when the user clicked done. The thread stays
+ *  hidden until a real message with a later date arrives. */
+export interface DoneItem {
+  chatGuid: string;
+  messageDate: number;
+}
+
+/** What `undo_last` reversed: the action kind and how many chats it
+ *  touched (a bulk action is one entry). */
+export interface UndoOutcome {
+  action: 'done' | 'snooze' | 'mute' | string;
+  count: number;
+}
+
+/** A 1:1 thread from someone with no matching contact record. */
+export interface UnknownSender {
+  chatGuid: string;
+  /** Raw handle: phone number or email. */
+  handle: string;
+  service: string | null;
+  /** Unix seconds of the first and most recent real message. */
+  firstDate: number;
+  lastDate: number;
+  /** Count of real (non-tapback, non-system) messages. */
+  messageCount: number;
+  preview: string | null;
+}
+
 /** Which list to fetch: chats where you owe a reply, or chats where
  *  you're waiting on one (your message unanswered for ≥3 days). */
 export type ReplyMode = 'owed' | 'waiting';
+
+/** The three tabs: the two reply lists plus unknown senders. */
+export type ViewMode = ReplyMode | 'unknown';
 
 export type AppError =
   | { kind: 'permission_denied'; path: string }

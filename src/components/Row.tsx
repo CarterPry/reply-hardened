@@ -1,4 +1,5 @@
 import type { MouseEvent } from 'react';
+import type { PressMods } from '../App';
 import type { PendingReply } from '../lib/types';
 import type { AgeTier } from '../lib/format';
 import { initials } from '../lib/format';
@@ -13,14 +14,13 @@ interface RowProps {
   tier: AgeTier;
   removing: boolean;
   selected: boolean;
-  /** True when any row is selected - row clicks then toggle selection
-   *  instead of opening the chat. */
-  selectionActive: boolean;
   onComplete: () => void;
   onSnooze: () => void;
   onMute: () => void;
-  onOpen: () => void;
-  onToggleSelect: () => void;
+  /** Row body pressed. The parent picks open vs toggle (⌘) vs
+   *  range-select (⇧) from the modifiers. */
+  onPress: (mods: PressMods) => void;
+  onToggleSelect: (mods: PressMods) => void;
 }
 
 export function Row({
@@ -30,23 +30,15 @@ export function Row({
   tier,
   removing,
   selected,
-  selectionActive,
   onComplete,
   onSnooze,
   onMute,
-  onOpen,
+  onPress,
   onToggleSelect,
 }: RowProps) {
   const stop = (e: MouseEvent<HTMLButtonElement>, fn: () => void) => {
     e.stopPropagation();
     fn();
-  };
-  const activate = () => {
-    if (selectionActive) {
-      onToggleSelect();
-    } else {
-      onOpen();
-    }
   };
   const rowTitle =
     item.isGroup && item.participants.length > 0
@@ -62,11 +54,11 @@ export function Row({
       tabIndex={0}
       aria-selected={selected}
       title={rowTitle}
-      onClick={activate}
+      onClick={(e) => onPress({ metaKey: e.metaKey, shiftKey: e.shiftKey })}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
-          activate();
+          onPress({ metaKey: e.metaKey, shiftKey: e.shiftKey });
         }
       }}
     >
@@ -75,7 +67,11 @@ export function Row({
         type="button"
         aria-label={selected ? `Deselect ${item.name}` : `Select ${item.name}`}
         aria-pressed={selected}
-        onClick={(e) => stop(e, onToggleSelect)}
+        onClick={(e) =>
+          stop(e, () =>
+            onToggleSelect({ metaKey: e.metaKey, shiftKey: e.shiftKey }),
+          )
+        }
         disabled={removing}
       >
         <span className="row__avatar-initials">{initials(item.name)}</span>

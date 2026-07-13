@@ -5,6 +5,7 @@ pub mod error;
 pub mod pending;
 pub mod replies;
 pub mod state;
+pub mod unknown;
 
 use state::StateStore;
 use tauri::{
@@ -30,8 +31,26 @@ pub fn run() {
                 .app_data_dir()
                 .map_err(|e| format!("resolving app data dir: {e}"))?;
             std::fs::create_dir_all(&data_dir).ok();
-            let store = StateStore::open(&data_dir.join("state.db"))
-                .map_err(|e| format!("opening state db: {e}"))?;
+            let state_path = data_dir.join("state.db");
+            // The bundle identifier rename (imessage-offscript → repli)
+            // moved the app data dir and orphaned everything the user
+            // had triaged. Adopt the old store once if no new one
+            // exists yet; its schema is then upgraded on open and the
+            // legacy `completed` table is migrated on first chat.db
+            // read.
+            if !state_path.exists() {
+                let legacy = data_dir
+                    .parent()
+                    .map(|p| p.join("com.seanrobins.imessage-offscript/state.db"));
+                if let Some(legacy) = legacy.filter(|p| p.exists()) {
+                    match std::fs::copy(&legacy, &state_path) {
+                        Ok(_) => log::info!("adopted legacy state db from {}", legacy.display()),
+                        Err(e) => log::warn!("legacy state db copy failed: {e}"),
+                    }
+                }
+            }
+            let store =
+                StateStore::open(&state_path).map_err(|e| format!("opening state db: {e}"))?;
             app.manage(store);
 
             let quit = MenuItem::with_id(app, "quit", "Quit Repli", true, None::<&str>)?;
@@ -125,9 +144,12 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_replies,
-            commands::mark_complete,
-            commands::snooze_chat,
-            commands::mute_chat,
+            commands::get_unknown_senders,
+            commands::add_to_contacts,
+            commands::mark_done,
+            commands::snooze_chats,
+            commands::mute_chats,
+            commands::undo_last,
             commands::unmute_chat,
             commands::list_muted,
             commands::open_fda_settings,

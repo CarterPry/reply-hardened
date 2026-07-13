@@ -24,6 +24,14 @@ impl From<rusqlite::Error> for AppError {
     }
 }
 
+impl From<serde_json::Error> for AppError {
+    fn from(e: serde_json::Error) -> Self {
+        AppError::Database {
+            message: format!("state serialization: {e}"),
+        }
+    }
+}
+
 impl From<std::io::Error> for AppError {
     fn from(e: std::io::Error) -> Self {
         AppError::Io {

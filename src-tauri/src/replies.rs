@@ -48,7 +48,11 @@ pub struct PendingReply {
 /// injectable so tests can drive it without Tauri or the real HOME.
 pub struct AssembleCtx<'a> {
     pub dir: &'a ContactDirectory,
-    pub completed: &'a HashSet<String>,
+    /// chat guid → done message date (unix seconds). A chat stays done
+    /// while its last real message is no newer than this; a later real
+    /// message resurfaces it (tapbacks never do - they're excluded from
+    /// last-message selection upstream).
+    pub done: &'a HashMap<String, i64>,
     pub snoozed: &'a HashMap<String, i64>,
     pub muted: &'a HashSet<String>,
     /// Unix seconds "now" - injected so staleness tests are deterministic.
@@ -75,8 +79,10 @@ pub fn assemble(
 
     let mut out = Vec::with_capacity(results.rows.len());
     for r in results.rows {
-        if ctx.completed.contains(&r.last_message_guid) {
-            continue;
+        if let Some(&done_date) = ctx.done.get(&r.chat_guid) {
+            if r.last_message_timestamp_unix <= done_date {
+                continue;
+            }
         }
         if r.last_message_timestamp_unix < cutoff || r.last_message_timestamp_unix > newest_allowed
         {
@@ -161,7 +167,7 @@ pub fn assemble(
         });
     }
     // Demote acknowledged rows below open ones. The sort is stable,
-    // so both partitions keep their oldest-first order from SQL.
+    // so both partitions keep their newest-first order from SQL.
     out.sort_by_key(|r| r.acknowledged);
     out
 }
@@ -169,7 +175,7 @@ pub fn assemble(
 /// Bare 5-6 digit senders (OTP/marketing short codes like 22395).
 /// Real numbers are 10+ digits and usually carry a `+`; emails have
 /// an `@`. See `config::FILTER_SHORT_CODES`.
-fn is_short_code(handle: &str) -> bool {
+pub fn is_short_code(handle: &str) -> bool {
     let t = handle.trim();
     (config::SHORT_CODE_DIGITS_MIN..=config::SHORT_CODE_DIGITS_MAX).contains(&t.len())
         && !t.is_empty()
@@ -213,7 +219,7 @@ fn first_name(full: &str) -> &str {
 
 /// Normalize whitespace and bound the length of a preview string.
 /// Returns `None` if there's nothing meaningful left after cleaning.
-fn clean_preview(raw: &str) -> Option<String> {
+pub fn clean_preview(raw: &str) -> Option<String> {
     let collapsed: String = raw.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.is_empty() {
         return None;

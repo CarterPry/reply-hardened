@@ -249,7 +249,7 @@ fn run_pending_query(conn: &Connection, direction: Direction) -> AppResult<Vec<P
           AND COALESCE(c.is_blackholed, 0) = 0
           AND COALESCE(c.is_archived, 0) = 0
           AND c.chat_identifier NOT LIKE '%(smsf%'
-        ORDER BY r.msg_date ASC
+        ORDER BY r.msg_date DESC
     "#;
 
     let mut stmt = conn.prepare(sql)?;
@@ -409,7 +409,7 @@ fn run_participants_query(
 /// Apple's `message.date` is "seconds since 2001-01-01 UTC" on older
 /// macOS and "nanoseconds since 2001-01-01 UTC" on macOS 10.13+. The
 /// Apple → Unix epoch shift is 978,307,200 seconds.
-fn apple_to_unix(raw: i64) -> i64 {
+pub fn apple_to_unix(raw: i64) -> i64 {
     const APPLE_EPOCH_OFFSET: i64 = 978_307_200;
     // Anything above 10^12 is unambiguously nanoseconds - even seconds-
     // since-2001 won't reach that for centuries.

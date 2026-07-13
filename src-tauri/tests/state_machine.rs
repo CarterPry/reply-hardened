@@ -25,8 +25,17 @@ fn now_unix() -> i64 {
 }
 
 fn run_with_dir(fx: &Fixture, direction: Direction, dir: &ContactDirectory) -> Vec<PendingReply> {
+    let done = HashMap::new();
+    run_with_done(fx, direction, dir, &done)
+}
+
+fn run_with_done(
+    fx: &Fixture,
+    direction: Direction,
+    dir: &ContactDirectory,
+    done: &HashMap<String, i64>,
+) -> Vec<PendingReply> {
     let results = read_pending_replies_at(&fx.path, direction).expect("query fixture db");
-    let completed = HashSet::new();
     let snoozed = HashMap::new();
     let muted = HashSet::new();
     assemble(
@@ -34,7 +43,7 @@ fn run_with_dir(fx: &Fixture, direction: Direction, dir: &ContactDirectory) -> V
         direction,
         &AssembleCtx {
             dir,
-            completed: &completed,
+            done,
             snoozed: &snoozed,
             muted: &muted,
             now: now_unix(),
@@ -571,7 +580,7 @@ fn d6_system_events_ignored() {
     assert_eq!(rows[0].preview.as_deref(), Some("welcome!"));
 }
 
-/// Completed / snoozed / muted state still filters rows out.
+/// Done / snoozed / muted state still filters rows out.
 #[test]
 fn d7_local_state_filters_still_apply() {
     let mut fx = Fixture::new();
@@ -581,12 +590,15 @@ fn d7_local_state_filters_still_apply() {
     let dm_a = fx.dm(a);
     let dm_b = fx.dm(b);
     let dm_c = fx.dm(c);
-    let guid_a = fx.msg(dm_a, false, Some(a), "done already", days_ago(1.0));
+    fx.msg(dm_a, false, Some(a), "done already", days_ago(1.0));
     fx.msg(dm_b, false, Some(b), "snoozed", days_ago(1.0));
     fx.msg(dm_c, false, Some(c), "muted", days_ago(1.0));
 
     let results = read_pending_replies_at(&fx.path, Direction::Owed).expect("query");
-    let completed: HashSet<String> = [guid_a].into_iter().collect();
+    // Done as of "now": the 1-day-old last message is covered.
+    let done: HashMap<String, i64> = [("iMessage;-;+14155550101".to_string(), now_unix())]
+        .into_iter()
+        .collect();
     let snoozed: HashMap<String, i64> =
         [("iMessage;-;+14155550102".to_string(), now_unix() + 3600)]
             .into_iter()
@@ -599,7 +611,7 @@ fn d7_local_state_filters_still_apply() {
         Direction::Owed,
         &AssembleCtx {
             dir: &ContactDirectory::default(),
-            completed: &completed,
+            done: &done,
             snoozed: &snoozed,
             muted: &muted,
             now: now_unix(),
@@ -607,6 +619,397 @@ fn d7_local_state_filters_still_apply() {
     );
     assert!(
         rows.is_empty(),
-        "completed+snoozed+muted all filter, got {rows:?}"
+        "done+snoozed+muted all filter, got {rows:?}"
     );
+}
+
+// ---------------------------------------------------------------
+// e* - done-state persistence, migration, undo
+// ---------------------------------------------------------------
+
+use repli_lib::state::{DoneItem, MutedChat, StateStore};
+use std::path::PathBuf;
+
+/// Throwaway on-disk state.db, so tests can exercise the actual
+/// persistence (close + reopen = "kill app + relaunch").
+struct TempState {
+    path: PathBuf,
+}
+
+impl TempState {
+    fn new() -> Self {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("repli-state-{}-{}.db", std::process::id(), n));
+        let _ = std::fs::remove_file(&path);
+        Self { path }
+    }
+
+    fn open(&self) -> StateStore {
+        StateStore::open(&self.path).expect("open state store")
+    }
+}
+
+impl Drop for TempState {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn run_with_store(fx: &Fixture, store: &StateStore) -> Vec<PendingReply> {
+    let done = store.done_map().expect("done map");
+    run_with_done(fx, Direction::Owed, &ContactDirectory::default(), &done)
+}
+
+/// Mark done → close the store → reopen from disk → still done. This
+/// is the "app update / rebuild / relaunch" regression: done markers
+/// must survive because they're keyed by chat guid + message date, not
+/// by anything an update can recompute differently.
+#[test]
+fn e1_done_survives_store_reopen() {
+    let mut fx = Fixture::new();
+    let a = fx.handle("+14155550101");
+    let dm = fx.dm(a);
+    fx.msg(dm, false, Some(a), "hey", days_ago(1.0));
+
+    let ts = TempState::new();
+    {
+        let store = ts.open();
+        let rows = run_with_store(&fx, &store);
+        assert_eq!(rows.len(), 1, "starts unhandled");
+        store
+            .mark_done(&[DoneItem {
+                chat_guid: rows[0].chat_guid.clone(),
+                message_date: rows[0].timestamp,
+            }])
+            .expect("mark done");
+        assert!(run_with_store(&fx, &store).is_empty(), "done hides it");
+    } // store dropped = app killed
+
+    let store = ts.open();
+    assert!(
+        run_with_store(&fx, &store).is_empty(),
+        "done survives relaunch"
+    );
+}
+
+/// A NEW real message after the done marker legitimately resurfaces
+/// the thread; a tapback after it does not.
+#[test]
+fn e2_new_message_resurfaces_tapback_does_not() {
+    let mut fx = Fixture::new();
+    let a = fx.handle("+14155550101");
+    let dm = fx.dm(a);
+    let first = fx.msg(dm, false, Some(a), "hey", days_ago(2.0));
+
+    let ts = TempState::new();
+    let store = ts.open();
+    let rows = run_with_store(&fx, &store);
+    store
+        .mark_done(&[DoneItem {
+            chat_guid: rows[0].chat_guid.clone(),
+            message_date: rows[0].timestamp,
+        }])
+        .expect("mark done");
+
+    // A later tapback on the done message: still done.
+    fx.reaction(dm, false, Some(a), TAPBACK_ADDS[0], &first, days_ago(0.9));
+    assert!(
+        run_with_store(&fx, &store).is_empty(),
+        "tapback must not resurface a done thread"
+    );
+
+    // A later real message: resurfaces.
+    fx.msg(dm, false, Some(a), "are you there?", days_ago(0.5));
+    let rows = run_with_store(&fx, &store);
+    assert_eq!(rows.len(), 1, "new real message resurfaces the thread");
+}
+
+/// Legacy guid-keyed `completed` rows migrate into the chat-keyed
+/// `done` table (using chat.db to recover chat + date), then the
+/// legacy table is dropped.
+#[test]
+fn e3_legacy_completed_table_migrates() {
+    let mut fx = Fixture::new();
+    let a = fx.handle("+14155550101");
+    let dm = fx.dm(a);
+    let guid = fx.msg(dm, false, Some(a), "old triage", days_ago(1.0));
+
+    let ts = TempState::new();
+    // Simulate the pre-rekey schema with one completed marker.
+    {
+        let conn = rusqlite::Connection::open(&ts.path).expect("create legacy db");
+        conn.execute_batch(
+            "CREATE TABLE completed (
+                last_message_guid TEXT PRIMARY KEY,
+                completed_at INTEGER NOT NULL
+            );",
+        )
+        .expect("legacy schema");
+        conn.execute(
+            "INSERT INTO completed (last_message_guid, completed_at) VALUES (?1, ?2)",
+            rusqlite::params![guid, now_unix()],
+        )
+        .expect("legacy row");
+    }
+
+    let store = ts.open();
+    let migrated = store
+        .migrate_legacy_completed(&fx.path)
+        .expect("migration runs");
+    assert_eq!(migrated, 1);
+    assert!(
+        run_with_store(&fx, &store).is_empty(),
+        "migrated marker still hides the thread"
+    );
+    // Second call is a no-op: the legacy table is gone.
+    assert_eq!(store.migrate_legacy_completed(&fx.path).expect("noop"), 0);
+}
+
+/// Undo reverses the most recent action; a bulk action is ONE entry
+/// and one undo restores the whole batch - even after a relaunch.
+#[test]
+fn e4_undo_bulk_done_across_relaunch() {
+    let mut fx = Fixture::new();
+    let a = fx.handle("+14155550101");
+    let b = fx.handle("+14155550102");
+    let dm_a = fx.dm(a);
+    let dm_b = fx.dm(b);
+    fx.msg(dm_a, false, Some(a), "one", days_ago(1.0));
+    fx.msg(dm_b, false, Some(b), "two", days_ago(1.0));
+
+    let ts = TempState::new();
+    {
+        let store = ts.open();
+        let rows = run_with_store(&fx, &store);
+        assert_eq!(rows.len(), 2);
+        let items: Vec<DoneItem> = rows
+            .iter()
+            .map(|r| DoneItem {
+                chat_guid: r.chat_guid.clone(),
+                message_date: r.timestamp,
+            })
+            .collect();
+        store.mark_done(&items).expect("bulk done");
+        assert!(run_with_store(&fx, &store).is_empty());
+    }
+
+    // Relaunch, then undo the bulk action from the previous session.
+    let store = ts.open();
+    let outcome = store.undo_last().expect("undo").expect("log not empty");
+    assert_eq!(outcome.action, "done");
+    assert_eq!(outcome.count, 2);
+    assert_eq!(
+        run_with_store(&fx, &store).len(),
+        2,
+        "one undo restores the whole batch"
+    );
+    assert!(
+        store.undo_last().expect("undo").is_none(),
+        "log is empty after the single entry"
+    );
+}
+
+/// Undoing a snooze and a mute round-trips through the store too.
+#[test]
+fn e5_undo_snooze_and_mute() {
+    let ts = TempState::new();
+    let store = ts.open();
+
+    store
+        .snooze_chats(&["chat-1".to_string()], now_unix() + 3600)
+        .expect("snooze");
+    store
+        .mute_chats(&[MutedChat {
+            chat_guid: "chat-2".to_string(),
+            name: "Bob".to_string(),
+        }])
+        .expect("mute");
+
+    let outcome = store.undo_last().expect("undo").expect("mute entry");
+    assert_eq!(outcome.action, "mute");
+    assert!(store.muted_chats().expect("muted").is_empty());
+
+    let outcome = store.undo_last().expect("undo").expect("snooze entry");
+    assert_eq!(outcome.action, "snooze");
+    assert!(store.snoozed_until().expect("snoozed").is_empty());
+}
+
+// ---------------------------------------------------------------
+// f* - sort order
+// ---------------------------------------------------------------
+
+/// Most recent activity on top: the thread with the newer last real
+/// message is index 0, and a tapback on an older thread doesn't bump
+/// it (tapbacks are excluded from last-message selection).
+#[test]
+fn f1_newest_thread_first() {
+    let mut fx = Fixture::new();
+    let a = fx.handle("+14155550101");
+    let b = fx.handle("+14155550102");
+    let dm_old = fx.dm(a);
+    let dm_new = fx.dm(b);
+    let old_guid = fx.msg(dm_old, false, Some(a), "older", days_ago(5.0));
+    fx.msg(dm_new, false, Some(b), "newer", days_ago(1.0));
+    // A fresh tapback on the old thread must not bump it above the
+    // newer thread. (It acknowledges the thread, which also demotes
+    // it - use a question mark so it stays open and only the sort
+    // order is under test.)
+    let q_guid = fx.msg(dm_old, false, Some(a), "you coming?", days_ago(4.0));
+    let _ = old_guid;
+    fx.reaction(dm_old, true, None, TAPBACK_ADDS[1], &q_guid, days_ago(0.1));
+
+    let rows = owed(&fx);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows[0].handle, "+14155550102",
+        "newest real message sorts first, got {rows:?}"
+    );
+    assert!(
+        rows[0].timestamp >= rows[1].timestamp,
+        "descending by last real message date"
+    );
+}
+
+// ---------------------------------------------------------------
+// g* - unknown senders view
+// ---------------------------------------------------------------
+
+use repli_lib::unknown::{assemble_unknown, read_unknown_senders};
+
+fn unknowns(
+    fx: &Fixture,
+    dir: &ContactDirectory,
+    store: &StateStore,
+) -> Vec<repli_lib::unknown::UnknownSender> {
+    let rows = read_unknown_senders(&fx.path).expect("query unknown senders");
+    let done = store.done_map().expect("done map");
+    let snoozed = store.snoozed_until().expect("snoozed");
+    let muted: HashSet<String> = store
+        .muted_chats()
+        .expect("muted")
+        .into_iter()
+        .map(|m| m.chat_guid)
+        .collect();
+    assemble_unknown(rows, dir, &done, &snoozed, &muted, now_unix())
+}
+
+/// Only handles with no contact match appear; known contacts, short
+/// codes, tapback-only threads, and threads you started with no reply
+/// are all excluded. Dates, counts, and the snippet come through.
+#[test]
+fn g1_unknown_senders_filtered_and_summarized() {
+    let mut fx = Fixture::new();
+    let stranger = fx.handle("+14155550199");
+    let friend = fx.handle("+14155550101");
+    let shortcode = fx.handle("22395");
+    let ghosted = fx.handle("+14155550188");
+    let reactor = fx.handle("+14155550177");
+
+    let dm_stranger = fx.dm(stranger);
+    fx.msg(
+        dm_stranger,
+        false,
+        Some(stranger),
+        "hi, we met at the gym",
+        days_ago(5.0),
+    );
+    fx.msg(dm_stranger, true, None, "oh hey!", days_ago(4.0));
+    // Latest message carries its text in attributedBody (macOS 13+).
+    fx.msg_attributed(
+        dm_stranger,
+        false,
+        Some(stranger),
+        "coffee this week?",
+        days_ago(1.0),
+    );
+
+    let dm_friend = fx.dm(friend);
+    fx.msg(
+        dm_friend,
+        false,
+        Some(friend),
+        "known person",
+        days_ago(1.0),
+    );
+
+    let dm_short = fx.dm(shortcode);
+    fx.msg(
+        dm_short,
+        false,
+        Some(shortcode),
+        "your code is 123456",
+        days_ago(1.0),
+    );
+
+    // A thread the user started that got no reply: not an unknown
+    // SENDER - they never messaged us.
+    let dm_ghosted = fx.dm(ghosted);
+    fx.msg(dm_ghosted, true, None, "hello?", days_ago(2.0));
+
+    // Tapback-only thread: no real messages at all.
+    let dm_react = fx.dm(reactor);
+    let target = fx.msg(dm_react, true, None, "seed", days_ago(3.0));
+    fx.reaction(
+        dm_react,
+        false,
+        Some(reactor),
+        TAPBACK_ADDS[0],
+        &target,
+        days_ago(1.0),
+    );
+    // dm_react has one real message (mine) and an inbound tapback -
+    // inbound_count of REAL messages is 0, so it's excluded.
+
+    let mut dir = ContactDirectory::default();
+    dir.insert_phone("+14155550101", "Alice Smith");
+
+    let ts = TempState::new();
+    let store = ts.open();
+    let rows = unknowns(&fx, &dir, &store);
+    assert_eq!(rows.len(), 1, "only the stranger qualifies, got {rows:?}");
+    let row = &rows[0];
+    assert_eq!(row.handle, "+14155550199");
+    assert_eq!(row.message_count, 3);
+    assert_eq!(row.preview.as_deref(), Some("coffee this week?"));
+    assert!(row.first_date < row.last_date);
+
+    // Mark done: gone. A newer inbound message: back.
+    store
+        .mark_done(&[DoneItem {
+            chat_guid: row.chat_guid.clone(),
+            message_date: row.last_date,
+        }])
+        .expect("mark done");
+    assert!(unknowns(&fx, &dir, &store).is_empty(), "done hides the row");
+    fx.msg(
+        dm_stranger,
+        false,
+        Some(stranger),
+        "following up!",
+        days_ago(0.2),
+    );
+    assert_eq!(
+        unknowns(&fx, &dir, &store).len(),
+        1,
+        "new message resurfaces"
+    );
+}
+
+/// Unknown senders include chats Messages itself filtered as junk -
+/// with "Filter Unknown Senders" on, that flag marks exactly the
+/// threads this view is for.
+#[test]
+fn g2_unknown_senders_include_is_filtered_chats() {
+    let mut fx = Fixture::new();
+    let stranger = fx.handle("+14155550199");
+    let dm = fx.dm(stranger);
+    fx.msg(dm, false, Some(stranger), "hello there", days_ago(1.0));
+    fx.set_chat_flag(dm, "is_filtered", 1);
+
+    let ts = TempState::new();
+    let store = ts.open();
+    let rows = unknowns(&fx, &ContactDirectory::default(), &store);
+    assert_eq!(rows.len(), 1, "is_filtered chats still appear here");
 }
