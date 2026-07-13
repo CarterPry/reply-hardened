@@ -99,15 +99,29 @@ pub fn run() {
         // Quit via the tray menu. Losing focus also hides it (standard
         // menu-bar drop-down behavior); disabled in dev builds so
         // devtools focus doesn't constantly dismiss the window.
-        .on_window_event(|window, event| match event {
-            tauri::WindowEvent::CloseRequested { api, .. } => {
-                api.prevent_close();
-                let _ = window.hide();
+        //
+        // The blur-hide only arms after the window has actually been
+        // focused once. An Accessory app launched from Finder often
+        // never wins focus, so without the gate the first-launch
+        // window flashed and hid before the user saw it.
+        .on_window_event(|window, event| {
+            use std::sync::atomic::{AtomicBool, Ordering};
+            static EVER_FOCUSED: AtomicBool = AtomicBool::new(false);
+            match event {
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+                tauri::WindowEvent::Focused(true) => {
+                    EVER_FOCUSED.store(true, Ordering::Relaxed);
+                }
+                tauri::WindowEvent::Focused(false)
+                    if !cfg!(debug_assertions) && EVER_FOCUSED.load(Ordering::Relaxed) =>
+                {
+                    let _ = window.hide();
+                }
+                _ => {}
             }
-            tauri::WindowEvent::Focused(false) if !cfg!(debug_assertions) => {
-                let _ = window.hide();
-            }
-            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_replies,
@@ -121,6 +135,18 @@ pub fn run() {
             commands::open_automation_settings,
             commands::open_chat,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        // Re-launching the app (Finder, Launchpad, `open`) while it's
+        // already running lands here — re-show the window instead of
+        // doing nothing, since a menu-bar app has no dock icon to
+        // signal "it's already open".
+        .run(|app, event| {
+            if let tauri::RunEvent::Reopen { .. } = event {
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.show();
+                    let _ = win.set_focus();
+                }
+            }
+        });
 }
