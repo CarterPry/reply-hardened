@@ -21,7 +21,7 @@ export function ageTier(unixSeconds: number, nowMs: number = Date.now()): AgeTie
   return 'fresh';
 }
 
-/** Unix seconds for the next 9am local time — the snooze target. */
+/** Unix seconds for the next 9am local time - the snooze target. */
 export function nextMorning(nowMs: number = Date.now()): number {
   const d = new Date(nowMs);
   d.setHours(9, 0, 0, 0);

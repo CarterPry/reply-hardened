@@ -2,9 +2,9 @@
 //! synthetic chat.db built by `fixture`. Each test encodes one check
 //! from the reply-state spec:
 //!
-//!   b* — group chat handling
-//!   c* — tapback state machine
-//!   d* — noise filtering / regression
+//!   b* - group chat handling
+//!   c* - tapback state machine
+//!   d* - noise filtering / regression
 //!
 //! Run with: cargo test --manifest-path src-tauri/Cargo.toml
 
@@ -51,7 +51,7 @@ fn waiting(fx: &Fixture) -> Vec<PendingReply> {
 }
 
 // ---------------------------------------------------------------
-// 0b — group chat handling
+// 0b - group chat handling
 // ---------------------------------------------------------------
 
 /// Group threads are keyed by chat.guid: a group containing Alice and
@@ -138,7 +138,7 @@ fn b4_group_rows_always_actionable() {
         assert!(row.is_group);
         assert!(
             !row.search_hint.trim().is_empty(),
-            "group '{}' has an empty search hint — tapping it would dead-tap",
+            "group '{}' has an empty search hint - tapping it would dead-tap",
             row.name
         );
         assert!(!row.handle.trim().is_empty());
@@ -147,7 +147,7 @@ fn b4_group_rows_always_actionable() {
 }
 
 /// In a group where the latest real message is from participant B
-/// (even mid-conversation between other people), the thread is owed —
+/// (even mid-conversation between other people), the thread is owed -
 /// and never duplicated into waiting.
 #[test]
 fn b5_group_reply_between_participants_lands_owed() {
@@ -170,7 +170,7 @@ fn b5_group_reply_between_participants_lands_owed() {
 }
 
 // ---------------------------------------------------------------
-// 0c — tapback state machine
+// 0c - tapback state machine
 // ---------------------------------------------------------------
 
 /// A tapback row is never picked as the "last substantive message":
@@ -247,7 +247,7 @@ fn c3_my_tapback_demotes_owed_not_cleared() {
 }
 
 /// Question-mark exception (owed): their last message asks a question;
-/// my tapback is not an answer — the row stays fully open.
+/// my tapback is not an answer - the row stays fully open.
 #[test]
 fn c4_question_mark_keeps_owed_open() {
     let mut fx = Fixture::new();
@@ -266,7 +266,7 @@ fn c4_question_mark_keeps_owed_open() {
 }
 
 /// Question-mark exception (waiting): I asked; their tapback is not an
-/// answer — I'm still waiting.
+/// answer - I'm still waiting.
 #[test]
 fn c5_question_mark_keeps_waiting_open() {
     let mut fx = Fixture::new();
@@ -284,7 +284,7 @@ fn c5_question_mark_keeps_waiting_open() {
     assert_eq!(open_count(&w), 1);
 }
 
-/// A tapback removal (3000–3005) is not an acknowledgment — neither on
+/// A tapback removal (3000-3005) is not an acknowledgment - neither on
 /// its own nor after cancelling an earlier add.
 #[test]
 fn c6_tapback_removal_is_not_acknowledgment() {
@@ -302,7 +302,7 @@ fn c6_tapback_removal_is_not_acknowledgment() {
         "add-then-remove must return the row to open"
     );
 
-    // Removal alone (no matching add) — degenerate but must not ack.
+    // Removal alone (no matching add) - degenerate but must not ack.
     let mut fx2 = Fixture::new();
     let bea = fx2.handle("+14155550102");
     let dm2 = fx2.dm(bea);
@@ -316,7 +316,7 @@ fn c6_tapback_removal_is_not_acknowledgment() {
     );
 }
 
-/// Re-adding a tapback after removing one acknowledges again — the
+/// Re-adding a tapback after removing one acknowledges again - the
 /// latest event per reactor wins.
 #[test]
 fn c7_readd_after_removal_acknowledges() {
@@ -366,7 +366,7 @@ fn c9_sticker_acknowledges() {
     assert!(o[0].acknowledged);
 }
 
-/// Badge counts equal exactly the number of OPEN rows in each list —
+/// Badge counts equal exactly the number of OPEN rows in each list -
 /// acknowledged rows appear in the list but never in the count.
 #[test]
 fn c10_badge_counts_match_state_machine() {
@@ -446,10 +446,10 @@ fn c13_reaction_on_older_message_does_not_acknowledge() {
 }
 
 // ---------------------------------------------------------------
-// 0d — noise filtering / regression
+// 0d - noise filtering / regression
 // ---------------------------------------------------------------
 
-/// 1:1 threads from bare 5–6 digit short codes (OTP/marketing) never
+/// 1:1 threads from bare 5-6 digit short codes (OTP/marketing) never
 /// surface; real numbers do.
 #[test]
 fn d1_short_code_senders_filtered() {

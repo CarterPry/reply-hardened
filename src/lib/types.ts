@@ -17,7 +17,7 @@ export interface PendingReply {
    *  truncated). `null` for stickers, attachment-only messages, or
    *  rows where the typedstream parse failed. */
   preview: string | null;
-  /** Text to type into Messages' search when opening a group chat —
+  /** Text to type into Messages' search when opening a group chat -
    *  the real display name, or participant first names for unnamed
    *  groups (the "+N" display label doesn't match anything). */
   searchHint: string;

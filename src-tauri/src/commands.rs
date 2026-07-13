@@ -6,9 +6,9 @@ use crate::state::{MutedChat, StateStore};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, State};
 
-/// Fetch the reply list for a mode: "owed" (they messaged last — you
-/// owe a reply) or "waiting" (you messaged last ≥3 days ago — you're
-/// waiting on them). The tray count tracks open owed threads only —
+/// Fetch the reply list for a mode: "owed" (they messaged last - you
+/// owe a reply) or "waiting" (you messaged last ≥3 days ago - you're
+/// waiting on them). The tray count tracks open owed threads only -
 /// acknowledged rows are visible in the list but don't count.
 #[tauri::command]
 pub fn get_replies(
@@ -55,7 +55,7 @@ fn replies_inner(state: &StateStore, direction: Direction) -> AppResult<Vec<Pend
 
 fn update_tray_count(app: &AppHandle, count: usize) {
     use std::sync::atomic::{AtomicUsize, Ordering};
-    // Skip the redraw when nothing changed — rewriting the tray title
+    // Skip the redraw when nothing changed - rewriting the tray title
     // every 30s poll makes the menu bar item flicker.
     static LAST: AtomicUsize = AtomicUsize::new(usize::MAX);
     if LAST.swap(count, Ordering::Relaxed) == count {
@@ -136,8 +136,8 @@ pub fn open_automation_settings() -> Result<(), String> {
 ///
 /// The keystroke path needs two macOS permissions, each with its own
 /// failure signature in osascript's stderr:
-///   Automation (Apple Events)  — error -1743 / "Not authorized"
-///   Accessibility (keystrokes) — error 1002 / "assistive access"
+///   Automation (Apple Events)  - error -1743 / "Not authorized"
+///   Accessibility (keystrokes) - error 1002 / "assistive access"
 /// Both are mapped to structured errors the frontend turns into a
 /// banner pointing at the right Settings pane. Running the script
 /// directly (no pre-probe) lets macOS show its own grant prompt on
@@ -164,7 +164,7 @@ pub fn open_chat(
     }
 
     // A group with no display name and no resolvable participants has
-    // nothing to type into Messages' search — typing nothing and
+    // nothing to type into Messages' search - typing nothing and
     // hitting Return would just select whatever chat was already
     // highlighted. Fail loudly instead of dead-tapping.
     if name.trim().is_empty() {
@@ -172,7 +172,7 @@ pub fn open_chat(
     }
 
     let safe_name = name.replace('\\', "\\\\").replace('"', "\\\"");
-    // `reopen` restores a window when Messages is running windowless —
+    // `reopen` restores a window when Messages is running windowless -
     // otherwise ⌘F lands nowhere.
     let script = format!(
         r#"tell application "Messages" to reopen

@@ -1,7 +1,7 @@
 [package]
 name = "repli"
 version = "0.1.0"
-description = "Repli — local iMessage reply tracker"
+description = "Local iMessage reply tracker"
 authors = ["Sean Robins"]
 edition = "2021"
 rust-version = "1.77.2"

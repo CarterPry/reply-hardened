@@ -33,7 +33,7 @@ export async function notifyNew(items: PendingReply[]): Promise<void> {
     const item = items[0]!;
     sendNotification({
       title: item.name,
-      body: item.preview ?? 'New message — needs reply',
+      body: item.preview ?? 'New message, needs reply',
     });
     return;
   }

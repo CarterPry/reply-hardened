@@ -6,14 +6,14 @@ import { initials } from '../lib/format';
 interface RowProps {
   item: PendingReply;
   /** Non-null when the row is acknowledged: the short explanation
-   *  shown in the meta line ("They reacted" / "You reacted — never
+   *  shown in the meta line ("They reacted" / "You reacted, never
    *  replied"). Acknowledged rows render dimmed. */
   ackLabel: string | null;
   relative: string;
   tier: AgeTier;
   removing: boolean;
   selected: boolean;
-  /** True when any row is selected — row clicks then toggle selection
+  /** True when any row is selected - row clicks then toggle selection
    *  instead of opening the chat. */
   selectionActive: boolean;
   onComplete: () => void;

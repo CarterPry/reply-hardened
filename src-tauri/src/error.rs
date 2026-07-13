@@ -1,7 +1,7 @@
 use serde::Serialize;
 
 /// Application error surfaced to the frontend. Serialized as a tagged
-/// union so the UI can branch on `kind` — most importantly to render
+/// union so the UI can branch on `kind` - most importantly to render
 /// the Full Disk Access prompt instead of a generic crash.
 #[derive(Debug, thiserror::Error, Serialize, Clone)]
 #[serde(tag = "kind", rename_all = "snake_case")]

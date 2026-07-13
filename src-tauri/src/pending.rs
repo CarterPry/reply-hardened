@@ -7,9 +7,9 @@ use crate::error::{AppError, AppResult};
 /// Which side of the conversation the surfaced rows represent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
-    /// Last real message was inbound — the user owes a reply.
+    /// Last real message was inbound - the user owes a reply.
     Owed,
-    /// Last real message was outbound — the user is waiting on a reply.
+    /// Last real message was outbound - the user is waiting on a reply.
     Waiting,
 }
 
@@ -33,7 +33,7 @@ pub struct PendingReplyRow {
     /// (common on macOS 13+).
     pub preview: Option<String>,
     /// The relevant side already reacted (tapback/sticker) to this
-    /// last message — the thread is acknowledged but not replied to.
+    /// last message - the thread is acknowledged but not replied to.
     pub acknowledged: bool,
 }
 
@@ -58,12 +58,12 @@ pub fn read_pending_replies(direction: Direction) -> AppResult<PendingResults> {
 
 /// Same as `read_pending_replies` but against an explicit database
 /// path. This is the entry point the test suite uses to run the real
-/// queries against a synthetic fixture db — the production path never
+/// queries against a synthetic fixture db - the production path never
 /// varies, but the logic must be testable without touching the user's
 /// actual chat.db.
 pub fn read_pending_replies_at(path: &Path, direction: Direction) -> AppResult<PendingResults> {
     // Surface FDA failures as a structured PermissionDenied before we
-    // ever touch sqlite — the underlying errors aren't always clear.
+    // ever touch sqlite - the underlying errors aren't always clear.
     match std::fs::metadata(path) {
         Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -116,25 +116,25 @@ pub fn read_pending_replies_at(path: &Path, direction: Direction) -> AppResult<P
 }
 
 fn run_pending_query(conn: &Connection, direction: Direction) -> AppResult<Vec<PendingReplyRow>> {
-    // For each chat, pick the single most recent real message — text
+    // For each chat, pick the single most recent real message - text
     // or attachment, not a tapback/sticker reaction or a system event
     // (joins, renames). Surface chats whose last real message came
     // from the queried side, flagging whether the other side has
     // reacted to it (`acknowledged`).
     // member_count comes from chat_handle_join, which excludes
-    // the user's own handle — so 1:1 chats have member_count = 1.
+    // the user's own handle - so 1:1 chats have member_count = 1.
     //
     // Filter rationale:
-    //   item_type = 0                  — drops join/leave/rename rows
-    //   associated_message_type = 0    — drops tapback and sticker
+    //   item_type = 0                  - drops join/leave/rename rows
+    //   associated_message_type = 0    - drops tapback and sticker
     //                                    reactions; real messages and
     //                                    inline replies keep this at 0
-    //   is_filtered = 0                — drops chats Messages itself
+    //   is_filtered = 0                - drops chats Messages itself
     //                                    classifies as junk/promotions
-    //                                    (spam carries values 1–68;
+    //                                    (spam carries values 1-68;
     //                                    every known-contact chat is 0)
-    //   is_blackholed / is_archived    — user explicitly buried these
-    //   NOT LIKE '%(smsf%'             — SMS-filter shadow chats
+    //   is_blackholed / is_archived    - user explicitly buried these
+    //   NOT LIKE '%(smsf%'             - SMS-filter shadow chats
     //                                    ((smsft)/(smsfp)/(smsft_rm)
     //                                    suffixes); some carry
     //                                    is_filtered = 0 despite being
@@ -143,13 +143,13 @@ fn run_pending_query(conn: &Connection, direction: Direction) -> AppResult<Vec<P
     // Acknowledgment: a reaction row points at its target via
     // associated_message_guid, stored as either the bare guid or a
     // `p:N/<guid>` / `bp:<guid>` prefix. Reaction "add" types:
-    //   1000       — sticker placed on a message
-    //   2000–2999  — classic tapbacks (love/like/…, incl. 2006 custom
+    //   1000       - sticker placed on a message
+    //   2000-2999  - classic tapbacks (love/like/…, incl. 2006 custom
     //                emoji reactions)
-    //   4000–4999  — custom emoji tapbacks (iOS 18+ variant)
+    //   4000-4999  - custom emoji tapbacks (iOS 18+ variant)
     // Removal types are the add value + 1000 (2000→3000, 2006→3006,
     // 4000→5000). An add counts only while no LATER removal of the
-    // same type from the same reactor targets the same message —
+    // same type from the same reactor targets the same message -
     // add-then-remove returns the thread to open; re-adding
     // acknowledges again. Stickers (1000) have no removal pairing
     // (1000+1000=2000 would collide with the love tapback).
@@ -157,7 +157,7 @@ fn run_pending_query(conn: &Connection, direction: Direction) -> AppResult<Vec<P
     // For Owed we look for the user's reaction (is_from_me = 1) on the
     // latest inbound message; for Waiting, the other party's reaction
     // (is_from_me = 0) on the latest outbound message. A reaction does
-    // NOT remove the row — it marks it `acknowledged`, which the UI
+    // NOT remove the row - it marks it `acknowledged`, which the UI
     // demotes and badge counts exclude. The question-mark exception
     // (a tapback on a question is not an answer) is applied in Rust
     // after the preview text is extracted, since the text may live in
@@ -292,16 +292,16 @@ fn run_pending_query(conn: &Connection, direction: Direction) -> AppResult<Vec<P
     Ok(out)
 }
 
-/// Best-effort extraction of the message text from `attributedBody` —
+/// Best-effort extraction of the message text from `attributedBody` -
 /// a typedstream-encoded NSAttributedString.
 ///
 /// The typedstream archive stores the string after class metadata for
 /// `NSString`, prefixed with a `+` (0x2B) marker and a length encoding:
-///   `< 0x80`         — that byte IS the length
-///   `0x81 [u16 LE]`  — 16-bit length follows
-///   `0x82 [u32 LE]`  — 32-bit length follows
+///   `< 0x80`         - that byte IS the length
+///   `0x81 [u16 LE]`  - 16-bit length follows
+///   `0x82 [u32 LE]`  - 32-bit length follows
 ///
-/// We don't decode the full archive — we just locate the first NSString
+/// We don't decode the full archive - we just locate the first NSString
 /// payload, which is the message text in the cases we care about.
 /// Returns `None` for anything we can't safely decode (attachments
 /// without text, reactions, malformed blobs).
@@ -411,7 +411,7 @@ fn run_participants_query(
 /// Apple → Unix epoch shift is 978,307,200 seconds.
 fn apple_to_unix(raw: i64) -> i64 {
     const APPLE_EPOCH_OFFSET: i64 = 978_307_200;
-    // Anything above 10^12 is unambiguously nanoseconds — even seconds-
+    // Anything above 10^12 is unambiguously nanoseconds - even seconds-
     // since-2001 won't reach that for centuries.
     if raw.abs() > 1_000_000_000_000 {
         raw / 1_000_000_000 + APPLE_EPOCH_OFFSET

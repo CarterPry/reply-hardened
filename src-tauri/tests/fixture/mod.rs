@@ -202,7 +202,7 @@ impl Fixture {
     }
 
     /// A message with NULL `text` whose string lives in a typedstream
-    /// `attributedBody` blob — the macOS 13+ shape.
+    /// `attributedBody` blob - the macOS 13+ shape.
     pub fn msg_attributed(
         &mut self,
         chat: ChatRef,
@@ -240,7 +240,7 @@ impl Fixture {
         )
     }
 
-    /// A system event row (join/leave/rename) — `item_type != 0`.
+    /// A system event row (join/leave/rename) - `item_type != 0`.
     pub fn system_event(&mut self, chat: ChatRef, date_ns: i64) -> String {
         let guid = self.fresh_guid("msg");
         self.conn
@@ -320,7 +320,7 @@ pub fn days_ago(days: f64) -> i64 {
 
 /// Minimal typedstream blob wrapping `text`, matching the layout the
 /// production parser understands (NSString marker, '+', length byte).
-/// Only supports texts shorter than 128 bytes — plenty for fixtures.
+/// Only supports texts shorter than 128 bytes - plenty for fixtures.
 pub fn typedstream_blob(text: &str) -> Vec<u8> {
     assert!(text.len() < 0x80, "fixture blob supports short texts only");
     let mut blob = Vec::new();

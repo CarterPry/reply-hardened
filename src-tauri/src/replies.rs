@@ -1,7 +1,7 @@
 //! Pure assembly of the reply lists: takes raw rows from `chat.db`
 //! (via `pending`), the contact directory, and the user's local state
 //! (completed/snoozed/muted), and produces the list the UI renders.
-//! No IO happens here — everything is injectable, which is what makes
+//! No IO happens here - everything is injectable, which is what makes
 //! the state machine testable against a fixture database.
 
 use crate::config;
@@ -23,7 +23,7 @@ pub struct PendingReply {
     pub service: Option<String>,
     /// Resolved participant names for groups (empty for 1:1).
     pub participants: Vec<String>,
-    /// First name of the latest sender — surfaced as the meta line in
+    /// First name of the latest sender - surfaced as the meta line in
     /// group rows so you can see who specifically owes a reply.
     pub last_sender: Option<String>,
     /// One-line preview of the latest message, truncated to
@@ -33,7 +33,7 @@ pub struct PendingReply {
     pub preview: Option<String>,
     /// What to type into Messages' search when opening a group chat.
     /// The group's real display name when it has one; otherwise
-    /// participant first names space-separated — unlike the display
+    /// participant first names space-separated - unlike the display
     /// label ("Mom, Dad +2"), that's something Messages search can
     /// actually match.
     pub search_hint: String,
@@ -51,7 +51,7 @@ pub struct AssembleCtx<'a> {
     pub completed: &'a HashSet<String>,
     pub snoozed: &'a HashMap<String, i64>,
     pub muted: &'a HashSet<String>,
-    /// Unix seconds "now" — injected so staleness tests are deterministic.
+    /// Unix seconds "now" - injected so staleness tests are deterministic.
     pub now: i64,
 }
 
@@ -121,7 +121,7 @@ pub fn assemble(
                     search_hint_for_group(&participants),
                 ),
             };
-            // For groups, "handle" is informational only — open_chat
+            // For groups, "handle" is informational only - open_chat
             // routes through the search hint for these.
             let handle = r.chat_identifier.clone();
             (name, handle, hint)
@@ -166,7 +166,7 @@ pub fn assemble(
     out
 }
 
-/// Bare 5–6 digit senders (OTP/marketing short codes like 22395).
+/// Bare 5-6 digit senders (OTP/marketing short codes like 22395).
 /// Real numbers are 10+ digits and usually carry a `+`; emails have
 /// an `@`. See `config::FILTER_SHORT_CODES`.
 fn is_short_code(handle: &str) -> bool {
@@ -177,7 +177,7 @@ fn is_short_code(handle: &str) -> bool {
 }
 
 /// Search text for an unnamed group: first names of up to three
-/// participants, space-separated. No commas or "+N" — Messages search
+/// participants, space-separated. No commas or "+N" - Messages search
 /// tokenizes on words and those extras kill the match.
 fn search_hint_for_group(participants: &[String]) -> String {
     participants

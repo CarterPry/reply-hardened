@@ -18,7 +18,7 @@ pub struct MutedChat {
 
 /// Tracks per-user state: message guids marked complete, snoozed
 /// chats, and muted chats. Stored in a separate SQLite file (the
-/// app's data dir) — `chat.db` itself is never written to.
+/// app's data dir) - `chat.db` itself is never written to.
 pub struct StateStore {
     conn: Mutex<Connection>,
 }

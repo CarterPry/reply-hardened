@@ -40,7 +40,7 @@ export function App() {
   /** lastMessageGuids of rows selected for a bulk action. */
   const [selected, setSelected] = useState<Set<string>>(new Set());
   /** Tracks the set of lastMessageGuids we've already shown to the user.
-   *  Stays null until the first successful load — so the very first
+   *  Stays null until the first successful load - so the very first
    *  result doesn't trigger a flood of notifications. Only the owed
    *  list notifies; "waiting" threads are by definition not news. */
   const seenGuidsRef = useRef<Set<string> | null>(null);
@@ -67,7 +67,7 @@ export function App() {
       const nextSeen = new Set(owed.map((x) => x.lastMessageGuid));
       const prevSeen = seenGuidsRef.current;
       if (prevSeen) {
-        // Acknowledged rows are not news — you already reacted.
+        // Acknowledged rows are not news - you already reacted.
         const fresh = owed.filter(
           (x) => !prevSeen.has(x.lastMessageGuid) && !x.acknowledged,
         );
@@ -227,7 +227,7 @@ export function App() {
 
   const clearSelection = useCallback(() => setSelected(new Set()), []);
 
-  /** Switch tabs and drop the selection — it belongs to one list. */
+  /** Switch tabs and drop the selection - it belongs to one list. */
   const switchMode = useCallback(
     (next: ReplyMode) => {
       setMode(next);
@@ -394,7 +394,7 @@ export function App() {
                 ackLabel={
                   item.acknowledged
                     ? mode === 'owed'
-                      ? 'You reacted — never replied'
+                      ? 'You reacted, never replied'
                       : 'They reacted'
                     : null
                 }

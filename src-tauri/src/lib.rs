@@ -34,13 +34,7 @@ pub fn run() {
                 .map_err(|e| format!("opening state db: {e}"))?;
             app.manage(store);
 
-            let quit = MenuItem::with_id(
-                app,
-                "quit",
-                "Quit Repli",
-                true,
-                None::<&str>,
-            )?;
+            let quit = MenuItem::with_id(app, "quit", "Quit Repli", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&quit])?;
             TrayIconBuilder::with_id("main")
                 .icon(
@@ -101,7 +95,7 @@ pub fn run() {
             }
             Ok(())
         })
-        // Closing the window hides it — the app lives in the menu bar.
+        // Closing the window hides it - the app lives in the menu bar.
         // Quit via the tray menu. Losing focus also hides it (standard
         // menu-bar drop-down behavior); disabled in dev builds so
         // devtools focus doesn't constantly dismiss the window.
