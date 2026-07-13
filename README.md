@@ -11,6 +11,25 @@ network calls, and has no analytics or telemetry of any kind. The
 only writes go to Repli's own small state file. You can verify all of
 this; it's why the code is open.
 
+## Install
+
+Download the latest DMG from
+[Releases](https://github.com/srobins23/repli/releases), open it, and
+drag Repli to Applications.
+
+The build is currently **unsigned** (no Apple Developer ID yet), so
+macOS will warn that it "cannot verify" the app or call it "damaged"
+on first open. Two ways past that, pick one:
+
+- Open **System Settings → Privacy & Security**, scroll down, and
+  click **Open Anyway** next to the Repli message, or
+- run `xattr -d com.apple.quarantine /Applications/Repli.app` in
+  Terminal.
+
+You'll also need to grant Full Disk Access (see
+[Permissions](#permissions)). Apple Silicon only for now; Intel users
+can build from source below.
+
 ## How it works
 
 - Reads `~/Library/Messages/chat.db` **read-only** with `rusqlite`.
