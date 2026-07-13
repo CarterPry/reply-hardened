@@ -1,6 +1,6 @@
 [package]
 name = "repli"
-version = "0.1.1"
+version = "0.1.2"
 description = "Local iMessage reply tracker"
 authors = ["Sean Robins"]
 edition = "2021"
