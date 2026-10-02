@@ -23,6 +23,8 @@
 use hmac::{Hmac, Mac};
 use sha1::Sha1;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
 type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
@@ -36,6 +38,16 @@ const IV: [u8; 16] = [b' '; 16];
 const VERSION_TAG: &[u8] = b"v10";
 /// The keychain account/service Signal Desktop writes.
 const KEYCHAIN_SERVICE: &str = "Signal Safe Storage";
+
+/// How long a recovered key is reused before going back to the
+/// keychain. The 30-second poll reads Signal three times (owed,
+/// waiting, unknown senders); without this, each one would spawn
+/// `security` and re-run PBKDF2, and on a keychain whose ACL asks
+/// every time it would mean a prompt storm. Matched to the contacts
+/// cache TTL so a key that genuinely changed (Signal reinstalled,
+/// profile reset) recovers on its own within minutes instead of
+/// needing a restart. Failures are never cached.
+const KEY_CACHE_TTL: Duration = Duration::from_secs(300);
 
 /// A byte buffer that is wiped when it goes out of scope. Not a
 /// hardware-grade guarantee (the OS may still have paged it), just the
@@ -130,8 +142,28 @@ pub fn signal_config_path() -> PathBuf {
     signal_support_dir().join("config.json")
 }
 
-/// Resolve the SQLCipher key for the local Signal Desktop profile.
+/// Resolve the SQLCipher key for the local Signal Desktop profile,
+/// reusing a recent result (see `KEY_CACHE_TTL`).
 pub fn signal_db_key() -> Result<Secret, KeyError> {
+    static CACHE: OnceLock<Mutex<Option<(Instant, String)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(guard) = cache.lock() {
+        if let Some((loaded_at, hex)) = guard.as_ref() {
+            if loaded_at.elapsed() < KEY_CACHE_TTL {
+                return Ok(Secret::new(hex.clone().into_bytes()));
+            }
+        }
+    }
+    let secret = signal_db_key_uncached()?;
+    if let (Ok(mut guard), Some(hex)) = (cache.lock(), secret.as_hex_str()) {
+        *guard = Some((Instant::now(), hex.to_string()));
+    }
+    Ok(secret)
+}
+
+/// Always goes to disk and the keychain. Used by the cached wrapper
+/// and directly by tests.
+pub fn signal_db_key_uncached() -> Result<Secret, KeyError> {
     let path = signal_config_path();
     let raw = read_config(&path)?;
     let key_material = parse_config(&raw)?;
