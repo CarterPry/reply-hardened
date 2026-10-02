@@ -20,7 +20,6 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_positioner::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // Menu bar app: no dock icon, no cmd-tab entry. The tray
             // icon is the app's presence; the window is a drop-down.
@@ -33,43 +32,12 @@ pub fn run() {
                 .map_err(|e| format!("resolving app data dir: {e}"))?;
             std::fs::create_dir_all(&data_dir).ok();
             let state_path = data_dir.join("state.db");
-            // The bundle identifier rename (imessage-offscript → repli)
-            // moved the app data dir and orphaned everything the user
-            // had triaged. Adopt the old store once if no new one
-            // exists yet; its schema is then upgraded on open and the
-            // legacy `completed` table is migrated on first chat.db
-            // read.
-            if !state_path.exists() {
-                let legacy = data_dir
-                    .parent()
-                    .map(|p| p.join("com.seanrobins.imessage-offscript/state.db"));
-                if let Some(legacy) = legacy.filter(|p| p.exists()) {
-                    match std::fs::copy(&legacy, &state_path) {
-                        Ok(_) => log::info!("adopted legacy state db from {}", legacy.display()),
-                        Err(e) => log::warn!("legacy state db copy failed: {e}"),
-                    }
-                }
-            }
             let store =
                 StateStore::open(&state_path).map_err(|e| format!("opening state db: {e}"))?;
             app.manage(store);
 
-            let check = MenuItem::with_id(
-                app,
-                "check_updates",
-                "Check for Updates…",
-                true,
-                None::<&str>,
-            )?;
-            let quit = MenuItem::with_id(app, "quit", "Quit Repli", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&check, &quit])?;
-
-            // Quiet availability check at launch. Skipped in dev: there
-            // is no appcast for unreleased builds and the noise drowns
-            // real logs.
-            if !cfg!(debug_assertions) {
-                check_for_updates(app.handle().clone(), false);
-            }
+            let quit = MenuItem::with_id(app, "quit", "Quit Repli Hardened", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&quit])?;
 
             TrayIconBuilder::with_id("main")
                 .icon(
@@ -83,8 +51,6 @@ pub fn run() {
                 .on_menu_event(|app, event| {
                     if event.id() == "quit" {
                         app.exit(0);
-                    } else if event.id() == "check_updates" {
-                        check_for_updates(app.clone(), true);
                     }
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -189,86 +155,4 @@ pub fn run() {
                 }
             }
         });
-}
-
-/// Check the release feed for a newer version. `interactive` = the
-/// user asked via the tray menu: install immediately and restart, and
-/// report "up to date" / failures. A background check (launch) only
-/// posts an "update available" notification - it never restarts the
-/// app out from under the user.
-fn check_for_updates(app: tauri::AppHandle, interactive: bool) {
-    use tauri_plugin_notification::NotificationExt;
-    use tauri_plugin_updater::UpdaterExt;
-
-    tauri::async_runtime::spawn(async move {
-        let updater = match app.updater() {
-            Ok(u) => u,
-            Err(e) => {
-                log::warn!("updater unavailable: {e}");
-                return;
-            }
-        };
-        match updater.check().await {
-            Ok(Some(update)) => {
-                if !interactive {
-                    let _ = app
-                        .notification()
-                        .builder()
-                        .title("Repli update available")
-                        .body(format!(
-                            "Version {} is out. Right-click the menu bar icon and choose \
-                             \"Check for Updates…\" to install.",
-                            update.version
-                        ))
-                        .show();
-                    return;
-                }
-                let version = update.version.clone();
-                match update.download_and_install(|_, _| {}, || {}).await {
-                    Ok(()) => {
-                        let _ = app
-                            .notification()
-                            .builder()
-                            .title("Repli updated")
-                            .body(format!("Version {version} installed - restarting."))
-                            .show();
-                        app.restart();
-                    }
-                    Err(e) => {
-                        log::warn!("update install failed: {e}");
-                        let _ = app
-                            .notification()
-                            .builder()
-                            .title("Update failed")
-                            .body(e.to_string())
-                            .show();
-                    }
-                }
-            }
-            Ok(None) => {
-                if interactive {
-                    let _ = app
-                        .notification()
-                        .builder()
-                        .title("Repli is up to date")
-                        .body(format!(
-                            "You're on the latest version ({}).",
-                            app.package_info().version
-                        ))
-                        .show();
-                }
-            }
-            Err(e) => {
-                log::warn!("update check failed: {e}");
-                if interactive {
-                    let _ = app
-                        .notification()
-                        .builder()
-                        .title("Update check failed")
-                        .body(e.to_string())
-                        .show();
-                }
-            }
-        }
-    });
 }

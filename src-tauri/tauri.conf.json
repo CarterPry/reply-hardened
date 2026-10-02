@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Repli",
+  "productName": "Repli Hardened",
   "version": "0.1.3",
-  "identifier": "com.seanrobins.repli",
+  "identifier": "local.codex.repli.hardened",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5174",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Repli",
+        "title": "Repli Hardened",
         "width": 460,
         "height": 760,
         "minWidth": 380,
@@ -25,18 +25,9 @@
       "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
     }
   },
-  "plugins": {
-    "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQzQkY2NUQwODY4MjZFODIKUldTQ2JvS0cwR1cvUXgzREVFS2N4djRlSUU1dTA1OHFBM2J6enh5NmxHUUNUYzE1SzduL2FuaWkK",
-      "endpoints": [
-        "https://github.com/srobins23/repli/releases/latest/download/latest.json"
-      ]
-    }
-  },
   "bundle": {
     "active": true,
     "targets": "all",
-    "createUpdaterArtifacts": true,
     "macOS": {
       "signingIdentity": "-"
     },

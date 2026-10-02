@@ -24,27 +24,16 @@ async function ensurePermission(): Promise<boolean> {
   return false;
 }
 
-/** Fire a single notification summarizing the new pendings. */
+/** Notify without putting names, handles, or message text on screen. */
 export async function notifyNew(items: PendingReply[]): Promise<void> {
   if (items.length === 0) return;
   if (!(await ensurePermission())) return;
 
-  if (items.length === 1) {
-    const item = items[0]!;
-    sendNotification({
-      title: item.name,
-      body: item.preview ?? 'New message, needs reply',
-    });
-    return;
-  }
-
-  const names = items
-    .slice(0, 3)
-    .map((i) => i.name)
-    .join(', ');
-  const extra = items.length > 3 ? ` +${items.length - 3} more` : '';
   sendNotification({
-    title: `${items.length} new messages`,
-    body: `${names}${extra}`,
+    title:
+      items.length === 1
+        ? '1 conversation needs attention'
+        : `${items.length} conversations need attention`,
+    body: 'Open Repli Hardened to review.',
   });
 }
