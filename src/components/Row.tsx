@@ -1,11 +1,16 @@
 import type { MouseEvent } from 'react';
 import type { PressMods } from '../App';
 import type { PendingReply } from '../lib/types';
+import { PLATFORM_LABELS } from '../lib/types';
 import type { AgeTier } from '../lib/format';
 import { initials } from '../lib/format';
 
 interface RowProps {
   item: PendingReply;
+  /** Show the source chip. The list only sets this when it spans more
+   *  than one platform - otherwise every row would carry the same
+   *  label. */
+  showPlatform: boolean;
   /** Non-null when the row is acknowledged: the short explanation
    *  shown in the meta line ("They reacted" / "You reacted, never
    *  replied"). Acknowledged rows render dimmed. */
@@ -25,6 +30,7 @@ interface RowProps {
 
 export function Row({
   item,
+  showPlatform,
   ackLabel,
   relative,
   tier,
@@ -82,6 +88,14 @@ export function Row({
       <div className="row__body">
         <div className="row__name">{item.name}</div>
         <div className="row__meta">
+          {showPlatform && (
+            <>
+              <span className="row__platform">
+                {PLATFORM_LABELS[item.platform]}
+              </span>
+              <span className="row__sep">·</span>
+            </>
+          )}
           {ackLabel && (
             <>
               <span className="row__ack">{ackLabel}</span>

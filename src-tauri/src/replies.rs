@@ -7,12 +7,19 @@
 use crate::config;
 use crate::contacts::ContactDirectory;
 use crate::pending::{Direction, PendingResults};
+use crate::sources::Platform;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingReply {
+    /// Which app this conversation lives in. Decides the chip the row
+    /// shows and how `open_chat` reaches the thread.
+    pub platform: Platform,
+    /// State key for this chat, namespaced per platform. iMessage uses
+    /// the bare `chat.guid`; the other sources prefix theirs. Named
+    /// `chat_guid` on the wire for backward compatibility.
     pub chat_guid: String,
     pub name: String,
     pub handle: String,
@@ -44,6 +51,66 @@ pub struct PendingReply {
     pub acknowledged: bool,
 }
 
+/// The platform-independent half of row filtering: the staleness
+/// window, the waiting-age floor, and the user's local triage state.
+/// Every source runs its rows through this so "done", "snoozed",
+/// "muted" and the age rules mean exactly the same thing on iMessage,
+/// WhatsApp and Signal.
+pub struct Filters<'a> {
+    pub done: &'a HashMap<String, i64>,
+    pub snoozed: &'a HashMap<String, i64>,
+    pub muted: &'a HashSet<String>,
+    pub now: i64,
+    pub direction: Direction,
+}
+
+impl<'a> Filters<'a> {
+    pub fn new(ctx: &AssembleCtx<'a>, direction: Direction) -> Self {
+        Self {
+            done: ctx.done,
+            snoozed: ctx.snoozed,
+            muted: ctx.muted,
+            now: ctx.now,
+            direction,
+        }
+    }
+
+    /// Oldest message date still worth surfacing.
+    pub fn cutoff(&self) -> i64 {
+        self.now - config::STALE_AFTER_SECS
+    }
+
+    /// Newest message date still eligible. In "waiting" mode a thread
+    /// only counts once your message has gone unanswered a while.
+    pub fn newest_allowed(&self) -> i64 {
+        match self.direction {
+            Direction::Owed => i64::MAX,
+            Direction::Waiting => self.now - config::WAITING_MIN_AGE_SECS,
+        }
+    }
+
+    /// Should a row with this state key / timestamp / ack flag survive?
+    pub fn keep(&self, chat_key: &str, timestamp: i64, acknowledged: bool) -> bool {
+        if let Some(&done_date) = self.done.get(chat_key) {
+            if timestamp <= done_date {
+                return false;
+            }
+        }
+        if timestamp < self.cutoff() || timestamp > self.newest_allowed() {
+            return false;
+        }
+        if self.muted.contains(chat_key) || self.snoozed.contains_key(chat_key) {
+            return false;
+        }
+        // Legacy behavior: acknowledged rows are cleared outright
+        // instead of being shown demoted.
+        if acknowledged && !config::TAPBACK_ACK_DEMOTES {
+            return false;
+        }
+        true
+    }
+}
+
 /// Everything `assemble` needs besides the rows themselves. All
 /// injectable so tests can drive it without Tauri or the real HOME.
 pub struct AssembleCtx<'a> {
@@ -70,30 +137,11 @@ pub fn assemble(
     direction: Direction,
     ctx: &AssembleCtx,
 ) -> Vec<PendingReply> {
-    let cutoff = ctx.now - config::STALE_AFTER_SECS;
-    // In waiting mode a thread only counts once it's gone quiet.
-    let newest_allowed = match direction {
-        Direction::Owed => i64::MAX,
-        Direction::Waiting => ctx.now - config::WAITING_MIN_AGE_SECS,
-    };
+    let filters = Filters::new(ctx, direction);
 
     let mut out = Vec::with_capacity(results.rows.len());
     for r in results.rows {
-        if let Some(&done_date) = ctx.done.get(&r.chat_guid) {
-            if r.last_message_timestamp_unix <= done_date {
-                continue;
-            }
-        }
-        if r.last_message_timestamp_unix < cutoff || r.last_message_timestamp_unix > newest_allowed
-        {
-            continue;
-        }
-        if ctx.muted.contains(&r.chat_guid) || ctx.snoozed.contains_key(&r.chat_guid) {
-            continue;
-        }
-        // Legacy behavior: acknowledged rows are cleared outright
-        // instead of being shown demoted.
-        if r.acknowledged && !config::TAPBACK_ACK_DEMOTES {
+        if !filters.keep(&r.chat_guid, r.last_message_timestamp_unix, r.acknowledged) {
             continue;
         }
         let is_group = r.member_count > 1;
@@ -151,6 +199,7 @@ pub fn assemble(
 
         let preview = r.preview.as_deref().and_then(clean_preview);
         out.push(PendingReply {
+            platform: Platform::IMessage,
             chat_guid: r.chat_guid,
             name,
             handle,
@@ -185,7 +234,7 @@ pub fn is_short_code(handle: &str) -> bool {
 /// Search text for an unnamed group: first names of up to three
 /// participants, space-separated. No commas or "+N" - Messages search
 /// tokenizes on words and those extras kill the match.
-fn search_hint_for_group(participants: &[String]) -> String {
+pub fn search_hint_for_group(participants: &[String]) -> String {
     participants
         .iter()
         .take(3)
@@ -194,7 +243,7 @@ fn search_hint_for_group(participants: &[String]) -> String {
         .join(" ")
 }
 
-fn resolve_one(handle: &str, dir: &ContactDirectory) -> String {
+pub fn resolve_one(handle: &str, dir: &ContactDirectory) -> String {
     dir.lookup(handle)
         .map(str::to_string)
         .unwrap_or_else(|| handle.to_string())
@@ -202,7 +251,7 @@ fn resolve_one(handle: &str, dir: &ContactDirectory) -> String {
 
 /// "Mom" / "Mom, Dad" / "Mom, Dad, Sis" / "Mom, Dad +2" depending on
 /// participant count. Uses first names only so groups stay readable.
-fn format_group_name(participants: &[String]) -> String {
+pub fn format_group_name(participants: &[String]) -> String {
     let firsts: Vec<&str> = participants.iter().map(|p| first_name(p)).collect();
     match firsts.len() {
         0 => "Group".to_string(),
@@ -213,7 +262,7 @@ fn format_group_name(participants: &[String]) -> String {
     }
 }
 
-fn first_name(full: &str) -> &str {
+pub fn first_name(full: &str) -> &str {
     full.split_whitespace().next().unwrap_or(full)
 }
 

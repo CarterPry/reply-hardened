@@ -1,15 +1,23 @@
 # Repli
 
-A minimal macOS menu bar app that surfaces iMessage conversations
-where you owe someone a reply and, in a second tab, conversations
-where someone owes you one. Clean, scannable, just names and a single
-action.
+A minimal macOS menu bar app that surfaces conversations where you owe
+someone a reply and, in a second tab, conversations where someone owes
+you one. Clean, scannable, just names and a single action.
 
-**Privacy: nothing leaves your machine.** Repli reads two local
-databases (your Messages history and your address book), makes zero
-network calls, and has no analytics or telemetry of any kind. The
-only writes go to Repli's own small state file. You can verify all of
-this; it's why the code is open.
+Three sources, one list: **iMessage**, **WhatsApp**, and **Signal**.
+Every rule is the same on all three - the same staleness window, the
+same 3-day follow-up floor, the same done / snooze / mute - so the
+list is one triage queue rather than three. Rows carry a small chip
+naming their source, shown only when the list actually spans more than
+one platform.
+
+**Privacy: nothing leaves your machine.** Repli reads local databases
+only (Messages, WhatsApp, Signal, and your address book), makes zero
+network calls, and has no analytics or telemetry of any kind. The only
+writes go to Repli's own small state file. Signal's database is
+encrypted, so Repli also reads one login-keychain item to unwrap the
+key - see [Permissions](#permissions). You can verify all of this;
+it's why the code is open.
 
 ## Install
 
@@ -33,10 +41,40 @@ can build from source below.
 
 ## How it works
 
-- Reads `~/Library/Messages/chat.db` **read-only** with `rusqlite`.
-  The database is opened in place with SQLite's read-only flag and is
-  never copied, modified, or written to.
-- **Owe reply** tab: for each chat, finds the most recent real message;
+### The sources
+
+| Source | Database | Encrypted | Reactions |
+|---|---|---|---|
+| iMessage | `~/Library/Messages/chat.db` | no | tapbacks + stickers |
+| WhatsApp | `~/Library/Group Containers/group.net.whatsapp.WhatsApp.shared/ChatStorage.sqlite` | no | not stored by WhatsApp |
+| Signal | `~/Library/Application Support/Signal/sql/db.sqlite` | SQLCipher 4 | yes |
+
+All three are opened **read-only**, in place, with SQLite's read-only
+flag - never copied, modified, or written to. (The one exception is a
+throwaway copy of Signal's *still-encrypted* file when Signal.app is
+closed; see [Limitations](#limitations).)
+
+A source that can't be read degrades on its own: a missing app, a
+denied keychain prompt or a schema change takes that platform out of
+the list and prints one line at the bottom of the window explaining
+why. The other sources keep working. Only iMessage is load-bearing -
+if `chat.db` can't be read you get the Full Disk Access prompt.
+
+Turn a source off entirely with `ENABLE_WHATSAPP` / `ENABLE_SIGNAL` in
+[`src-tauri/src/config.rs`](src-tauri/src/config.rs); a disabled source
+is never opened and raises no keychain prompt.
+
+### The rules
+
+- **Identity.** Names come from your address book first, on every
+  platform, so one person reads the same whether they texted you on
+  iMessage, WhatsApp or Signal. Only then does Repli fall back to the
+  name the app itself shows, and finally to the raw number.
+- **One row per conversation per platform.** The same person on two
+  apps is two rows, triaged independently - replying on Signal doesn't
+  clear the WhatsApp thread, because it didn't.
+- **Owe reply** tab: for each chat on every source, finds the most
+  recent real message;
   surfaces it if that message was inbound (`is_from_me = 0`). That
   covers both unread messages and "read but ghosted" threads. Oldest
   first: the person you've ghosted longest is at the top, and
@@ -44,26 +82,38 @@ can build from source below.
 - **Waiting** tab: the inverse. Threads where your last message has
   sat unanswered for at least 3 days. Follow-up radar.
 - Reacting to a message **acknowledges** the thread rather than
-  clearing it: classic tapbacks (2000-range, incl. 2006 custom emoji),
-  custom emoji tapbacks (4000-range, iOS 18+), and stickers (1000)
-  demote the row: dimmed, sorted last, excluded from the badge
-  counts, labeled "You reacted, never replied" / "They reacted".
-  Removing a tapback (3000-range) reopens the thread. Exception: if
-  the last message contains a question mark, a tapback is not an
-  answer and the row stays fully open.
-- Junk never surfaces: chats Messages classifies as spam/promotions
-  (`is_filtered`), SMS-filter shadow chats (`(smsft)`/`(smsfp)`),
-  blackholed/archived chats, and bare 5-6 digit short-code senders
-  (OTP/marketing) are all excluded.
-- Group chats are treated as a single thread, keyed by the chat's
-  guid. Unnamed groups get labels built from participant names.
+  clearing it: on iMessage, classic tapbacks (2000-range, incl. 2006
+  custom emoji), custom emoji tapbacks (4000-range, iOS 18+), and
+  stickers (1000) demote the row: dimmed, sorted last, excluded from
+  the badge counts, labeled "You reacted, never replied" / "They
+  reacted". Removing a tapback (3000-range) reopens the thread. Signal
+  reactions work identically (its `reactions` table records who
+  reacted, so the owed/waiting direction is respected). WhatsApp
+  stores no reactions at all, so WhatsApp rows are never acknowledged.
+  Exception on every source: if the last message contains a question
+  mark, a reaction is not an answer and the row stays fully open.
+- Junk never surfaces: on iMessage, chats Messages classifies as
+  spam/promotions (`is_filtered`), SMS-filter shadow chats
+  (`(smsft)`/`(smsfp)`), blackholed/archived chats, and bare 5-6 digit
+  short-code senders (OTP/marketing). On WhatsApp, status broadcasts
+  (`@broadcast`), channels (`@newsletter`), and chats you hid or
+  deleted. On Signal, archived conversations and Note to Self. System
+  rows - "X joined", subject changes, key changes, profile changes,
+  call history - are never candidates for "last message" on any
+  source, so they can't mask the real one.
+- Group chats are treated as a single thread. Unnamed groups get
+  labels built from participant names (WhatsApp and Signal usually
+  have a real subject, which is used as-is). Signal group membership
+  excludes your own account, matching iMessage's member counts.
 - Names resolve from `~/Library/Application Support/AddressBook/`
-  (cached for 5 minutes), falling back to phone number or email when
-  no contact match is found.
+  (cached for 5 minutes), falling back to the platform's own display
+  name, then to phone number or email.
 - Row actions: **check** marks it handled, **moon** snoozes the chat
   until 9am tomorrow, **bell-slash** mutes the chat permanently
   (unmute from the footer). If the same contact messages you again,
-  the row reappears.
+  the row reappears. State is keyed per platform - iMessage keeps its
+  bare chat guid (so state written by older versions still applies),
+  WhatsApp and Signal namespace theirs as `wa:` / `sg:`.
 
 Every threshold and heuristic above (staleness window, waiting age,
 question-mark rule, demote-vs-clear, short-code range) is a documented
@@ -80,17 +130,31 @@ count current in the background.
 
 Tauri 2 (Rust) + React 18 + TypeScript + Vite.
 
+- `src-tauri/src/sources.rs` - the `Platform` enum, per-platform state
+  key namespacing, and the per-source status the UI reports.
 - `src-tauri/src/pending.rs` - the chat.db query: picks each chat's
   last substantive message (tapbacks, stickers, and system events are
   never candidates) and computes the acknowledged flag by pairing
   reaction adds with later removals per reactor.
-- `src-tauri/src/replies.rs` - pure assembly: filtering (staleness,
-  short codes, snooze/mute/complete), name resolution, group labels.
-  No IO; everything is injectable, which is what makes it testable.
+- `src-tauri/src/whatsapp.rs` - the same shape of query against
+  WhatsApp's Core Data store.
+- `src-tauri/src/signal.rs` - the same against Signal Desktop's
+  SQLCipher database, including the WAL fallback.
+- `src-tauri/src/safestorage.rs` - recovery of Signal's database key
+  from `config.json` + the login keychain (Chromium `os_crypt`:
+  PBKDF2-HMAC-SHA1 then AES-128-CBC). PBKDF2 is implemented here over
+  `hmac`/`sha1` rather than pulling another dependency, and is covered
+  by the RFC 6070 vectors.
+- `src-tauri/src/replies.rs` - pure assembly: `Filters` (staleness,
+  waiting age, snooze/mute/done) is shared by all three sources, so a
+  rule can't drift between platforms. Name resolution and group labels
+  live here too. No IO; everything is injectable, which is what makes
+  it testable.
 - `src-tauri/src/state.rs` - Repli's own state (completed, snoozed,
-  muted) in a separate SQLite file in the app data directory.
-  `chat.db` is never written to.
-- `src-tauri/src/config.rs` - all behavioral constants.
+  muted) in a separate SQLite file in the app data directory. No
+  message database is ever written to.
+- `src-tauri/src/config.rs` - all behavioral constants, including the
+  per-source on/off switches.
 - `src/` - the React frontend; talks to Rust over Tauri IPC only.
 
 ## Prerequisites
@@ -112,8 +176,9 @@ npm install
 ### Full Disk Access (required)
 
 Repli reads files under `~/Library/`, which macOS protects behind
-**Full Disk Access (FDA)**. The app detects FDA-blocked reads and
-shows an inline prompt instead of crashing.
+**Full Disk Access (FDA)**. One grant covers all three message
+databases. The app detects FDA-blocked reads and shows an inline
+prompt instead of crashing.
 
 1. Open **System Settings → Privacy & Security → Full Disk Access**.
 2. Click the **+** button.
@@ -130,13 +195,25 @@ shows an inline prompt instead of crashing.
 The in-app prompt has an "Open Settings" button that jumps straight
 to the FDA pane.
 
-### Accessibility (only for opening group chats)
+### Keychain (only for Signal)
 
-Opening a **group** chat drives Messages' sidebar search via System
-Events keystrokes, which needs the **Accessibility** permission. The
-app detects the denial and shows an inline banner with an "Open
-Settings" shortcut. 1:1 chats open via the `imessage://` URL scheme
-and need nothing.
+Signal's database key lives in `config.json`, encrypted under a
+password in your login keychain (the generic password **"Signal Safe
+Storage"**). The first time Repli reads it, macOS asks you to allow
+access - click **Always Allow** so the 30-second poll doesn't re-ask.
+Deny it and Signal simply drops out of the list with a one-line
+explanation; nothing else is affected. Set `ENABLE_SIGNAL = false` in
+`config.rs` if you'd rather it never ask.
+
+### Accessibility (for opening groups, and all Signal chats)
+
+Only two kinds of conversation can be opened by URL - an iMessage 1:1
+(`imessage://`) and a WhatsApp 1:1 (`whatsapp://send?phone=`).
+Everything else (any group, and every Signal thread, since Signal
+Desktop publishes no conversation URL) is opened by activating the app
+and driving its search box with System Events keystrokes, which needs
+the **Accessibility** permission. The app detects the denial and shows
+an inline banner with an "Open Settings" shortcut.
 
 ## Run
 
@@ -148,19 +225,36 @@ npm run tauri build    # production .app
 ## Tests & contributing
 
 The state machine is covered by integration tests that run the real
-SQL and assembly pipeline against a **synthetic chat.db**. No test
-ever touches a real Messages database. One command:
+SQL and assembly pipeline against **synthetic databases** - one per
+source. No test in the default run touches a real message database.
+One command:
 
 ```bash
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-The fixture generator lives in
-[`src-tauri/tests/fixture/mod.rs`](src-tauri/tests/fixture/mod.rs):
-it builds a throwaway SQLite file with the Messages schema subset the
-app queries (chats, handles, messages, tapbacks, attributedBody
-blobs). If you're adding behavior, start by writing a fixture-backed
-test in `src-tauri/tests/state_machine.rs` that describes it.
+The fixture generators live in `src-tauri/tests/fixture/`:
+[`mod.rs`](src-tauri/tests/fixture/mod.rs) builds a throwaway
+`chat.db` (chats, handles, messages, tapbacks, attributedBody blobs),
+[`whatsapp.rs`](src-tauri/tests/fixture/whatsapp.rs) a Core Data
+`ChatStorage.sqlite`, and
+[`signal.rs`](src-tauri/tests/fixture/signal.rs) a plaintext stand-in
+for Signal's schema (the reader takes the key as an `Option`, so
+fixtures pass `None`; the key derivation itself is covered by RFC 6070
+vectors and a Chromium-wrapping round-trip in `safestorage`). If
+you're adding behavior, start with a fixture-backed test in
+`state_machine.rs` (iMessage) or `multi_source.rs` (WhatsApp, Signal,
+cross-source).
+
+There is also an opt-in smoke test that runs the real queries against
+**your own** databases, printing counts only - never a name, number,
+or message. It is how you check that Signal's key still unwraps and
+that every schema still matches after an app update:
+
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml \
+    --test live_smoke -- --ignored --nocapture
+```
 
 Before opening a PR:
 
@@ -174,11 +268,30 @@ cargo test   --manifest-path src-tauri/Cargo.toml
 
 ## Limitations
 
-- **No group deep-linking.** macOS offers no URL scheme that opens an
-  existing group conversation, so Repli drives Messages' search field
-  with synthesized keystrokes. It's best-effort: it needs the
-  Accessibility permission and can mis-select when group names are
+- **No group deep-linking, and no Signal deep-linking at all.** macOS
+  offers no URL scheme that opens an existing group conversation, and
+  Signal Desktop offers none for any conversation, so Repli drives the
+  app's search field with synthesized keystrokes. It's best-effort: it
+  needs the Accessibility permission and can mis-select when names are
   ambiguous.
+- **WhatsApp reactions are invisible.** WhatsApp's Mac database stores
+  no reactions anywhere - no table, no column - so a thread you only
+  reacted to looks unanswered, and WhatsApp rows are never shown
+  demoted. (A test asserts this, so if a future WhatsApp version starts
+  storing them, it fails loudly instead of going quietly wrong.)
+- **WhatsApp `@lid` chats have no number.** WhatsApp's newer
+  privacy-preserving ids aren't reversible to a phone number, so those
+  rows use WhatsApp's own display name, can't be matched against your
+  contacts, and open via search rather than a URL.
+- **Signal reads best while Signal is running.** Signal Desktop keeps
+  its database in WAL mode; a read-only connection can share that
+  while the app is open. With Signal closed, SQLite can't build the
+  index it needs, so Repli falls back to a throwaway copy of the
+  **still-encrypted** db/wal/shm triple in your temp directory, reads
+  it, and deletes it immediately. Nothing is ever decrypted to disk.
+- **Disappearing messages.** Repli reads whatever the apps have
+  already stored locally; a message that expired before Repli looked
+  is simply not there. Repli never copies message text anywhere.
 - **attributedBody decoding is partial.** On macOS 13+, message text
   often lives in a typedstream-encoded `attributedBody` blob. Repli
   extracts the first NSString payload, which covers normal texts but
@@ -202,9 +315,9 @@ npm run tauri build    # Tauri picks up the identity and signs
 xcrun notarytool submit --wait ...   # then staple
 ```
 
-Recipients also need to grant their own Full Disk Access, because the app
-reads *their* `chat.db`, on their machine. Nothing ever leaves the
-device.
+Recipients also need to grant their own Full Disk Access, because the
+app reads *their* databases, on their machine - plus a keychain
+approval if they use Signal. Nothing ever leaves the device.
 
 ## License
 

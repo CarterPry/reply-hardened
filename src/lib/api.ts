@@ -4,7 +4,9 @@ import type {
   DoneItem,
   MutedChat,
   PendingReply,
+  Platform,
   ReplyMode,
+  SourceStatus,
   UndoOutcome,
   UnknownSender,
 } from './types';
@@ -15,6 +17,12 @@ export function getReplies(mode: ReplyMode): Promise<PendingReply[]> {
 
 export function getUnknownSenders(): Promise<UnknownSender[]> {
   return invoke<UnknownSender[]>('get_unknown_senders');
+}
+
+/** Per-source outcome of the last poll, so the UI can say which
+ *  platforms the lists actually cover. */
+export function getSources(): Promise<SourceStatus[]> {
+  return invoke<SourceStatus[]>('get_sources');
 }
 
 /** Mark chats done. Always a batch (single row = batch of one) so a
@@ -62,13 +70,17 @@ export function openAutomationSettings(): Promise<void> {
   return invoke<void>('open_automation_settings');
 }
 
+/** Open a conversation in the app that owns it. iMessage and WhatsApp
+ *  1:1 chats go through a URL scheme; groups and all Signal threads
+ *  are opened by driving the app's search box. */
 export function openChat(
+  platform: Platform,
   handle: string,
   isGroup: boolean,
   chatGuid: string,
   name: string,
 ): Promise<void> {
-  return invoke<void>('open_chat', { handle, isGroup, chatGuid, name });
+  return invoke<void>('open_chat', { platform, handle, isGroup, chatGuid, name });
 }
 
 export function isAppError(e: unknown): e is AppError {

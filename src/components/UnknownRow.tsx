@@ -1,9 +1,12 @@
 import type { MouseEvent } from 'react';
 import type { PressMods } from '../App';
 import type { UnknownSender } from '../lib/types';
+import { PLATFORM_LABELS } from '../lib/types';
 
 interface UnknownRowProps {
   item: UnknownSender;
+  /** Show the source chip - set only when the list spans platforms. */
+  showPlatform: boolean;
   /** Relative time of the most recent / first message. */
   relative: string;
   firstRelative: string;
@@ -19,6 +22,7 @@ interface UnknownRowProps {
  *  context (dates, count, latest snippet) to decide what to do. */
 export function UnknownRow({
   item,
+  showPlatform,
   relative,
   firstRelative,
   removing,
@@ -77,6 +81,14 @@ export function UnknownRow({
           <span className={`row__time row__time--fresh`}>{relative}</span>
         </div>
         <div className="row__meta row__meta--secondary">
+          {showPlatform && (
+            <>
+              <span className="row__platform">
+                {PLATFORM_LABELS[item.platform]}
+              </span>
+              <span className="row__sep">·</span>
+            </>
+          )}
           <span>{countLabel}</span>
           <span className="row__sep">·</span>
           <span>first {firstRelative}</span>

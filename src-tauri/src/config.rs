@@ -41,3 +41,12 @@ pub const FILTER_SHORT_CODES: bool = true;
 /// US short codes are 5-6 digits; real numbers are 10+.
 pub const SHORT_CODE_DIGITS_MIN: usize = 5;
 pub const SHORT_CODE_DIGITS_MAX: usize = 6;
+
+/// Which sources to read. Turning one off here removes it from every
+/// list and from the source-status footer - no database of that
+/// platform is opened at all, and no keychain prompt is raised.
+///
+/// iMessage has no switch: it is the one source whose absence is an
+/// error rather than a fact (the app would have nothing to do).
+pub const ENABLE_WHATSAPP: bool = true;
+pub const ENABLE_SIGNAL: bool = true;

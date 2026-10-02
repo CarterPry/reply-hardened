@@ -2,6 +2,11 @@
 //! match, with enough context (dates, counts, latest snippet) to decide
 //! whether to reply, dismiss, or add the person to Contacts.
 //!
+//! This module is the iMessage reader plus the `UnknownSender` shape
+//! the other sources fill in (`whatsapp::read_unknown_at`,
+//! `signal::read_unknown_at`), so "unknown sender" means the same
+//! thing - no AddressBook match - on all three.
+//!
 //! Unlike the reply lists, this view deliberately INCLUDES chats
 //! Messages classifies as filtered (`is_filtered != 0`): with "Filter
 //! Unknown Senders" enabled, that flag is set on exactly the threads
@@ -19,10 +24,13 @@ use crate::contacts::ContactDirectory;
 use crate::error::{AppError, AppResult};
 use crate::pending::{apple_to_unix, extract_attributed_body_text};
 use crate::replies::is_short_code;
+use crate::sources::Platform;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnknownSender {
+    /// Which app the thread lives in.
+    pub platform: Platform,
     pub chat_guid: String,
     /// Raw handle: phone number or email.
     pub handle: String,
@@ -159,6 +167,7 @@ pub fn assemble_unknown(
                 && done.get(&r.chat_guid).map_or(true, |&d| r.last_date > d)
         })
         .map(|r| UnknownSender {
+            platform: Platform::IMessage,
             chat_guid: r.chat_guid,
             handle: r.handle,
             service: r.service,

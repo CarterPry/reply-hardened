@@ -4,9 +4,14 @@ pub mod contacts;
 pub mod error;
 pub mod pending;
 pub mod replies;
+pub mod safestorage;
+pub mod signal;
+pub mod sources;
 pub mod state;
 pub mod unknown;
+pub mod whatsapp;
 
+use commands::SourceStatusStore;
 use state::StateStore;
 use tauri::{
     menu::{Menu, MenuItem},
@@ -35,6 +40,8 @@ pub fn run() {
             let store =
                 StateStore::open(&state_path).map_err(|e| format!("opening state db: {e}"))?;
             app.manage(store);
+            // Per-source read status, populated on every poll.
+            app.manage(SourceStatusStore::default());
 
             let quit = MenuItem::with_id(app, "quit", "Quit Repli Hardened", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&quit])?;
@@ -128,6 +135,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_replies,
+            commands::get_sources,
             commands::get_unknown_senders,
             commands::add_to_contacts,
             commands::mark_done,

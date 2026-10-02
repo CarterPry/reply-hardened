@@ -5,6 +5,7 @@ import { PermissionPrompt } from './components/PermissionPrompt';
 import {
   addToContacts,
   getReplies,
+  getSources,
   getUnknownSenders,
   isAppError,
   listMuted,
@@ -24,9 +25,11 @@ import type {
   AppError,
   MutedChat,
   PendingReply,
+  SourceStatus,
   UnknownSender,
   ViewMode,
 } from './lib/types';
+import { PLATFORM_LABELS } from './lib/types';
 
 const POLL_MS = 30_000;
 /** How long the post-action toast stays up. ⌘Z reaches much further
@@ -76,6 +79,7 @@ export function App() {
   const [lists, setLists] = useState<Lists>({ owed: [], waiting: [] });
   const [unknown, setUnknown] = useState<UnknownSender[]>([]);
   const [muted, setMuted] = useState<MutedChat[]>([]);
+  const [sources, setSources] = useState<SourceStatus[]>([]);
   const [showMuted, setShowMuted] = useState(false);
   const [banner, setBanner] = useState<PermissionBanner>(null);
   const [error, setError] = useState<AppError | null>(null);
@@ -106,10 +110,12 @@ export function App() {
       waiting: PendingReply[],
       unknownList: UnknownSender[],
       mutedList: MutedChat[],
+      sourceList: SourceStatus[],
     ) => {
       setLists({ owed, waiting });
       setUnknown(unknownList);
       setMuted(mutedList);
+      setSources(sourceList);
       setError(null);
       // Drop selections for rows that vanished in this refresh.
       const alive = new Set([
@@ -141,23 +147,26 @@ export function App() {
     setError(isAppError(e) ? e : { kind: 'other', message: String(e) });
   }, []);
 
-  const fetchAll = useCallback(
-    () =>
-      Promise.all([
-        getReplies('owed'),
-        getReplies('waiting'),
-        getUnknownSenders(),
-        listMuted(),
-      ]),
-    [],
-  );
+  const fetchAll = useCallback(async () => {
+    const [owed, waiting, unknownList, mutedList] = await Promise.all([
+      getReplies('owed'),
+      getReplies('waiting'),
+      getUnknownSenders(),
+      listMuted(),
+    ]);
+    // Strictly after the reply fetches: get_replies is what refreshes
+    // the per-source status, so asking concurrently would read the
+    // previous poll's answer (and nothing at all on first launch).
+    const sourceList = await getSources();
+    return [owed, waiting, unknownList, mutedList, sourceList] as const;
+  }, []);
 
   const refreshAll = useCallback(async () => {
     const seq = ++fetchSeqRef.current;
     try {
-      const [owed, waiting, unknownList, mutedList] = await fetchAll();
+      const [owed, waiting, unknownList, mutedList, sourceList] = await fetchAll();
       if (seq === fetchSeqRef.current) {
-        applyResults(owed, waiting, unknownList, mutedList);
+        applyResults(owed, waiting, unknownList, mutedList, sourceList);
       }
     } catch (e) {
       if (seq === fetchSeqRef.current) handleError(e);
@@ -174,9 +183,9 @@ export function App() {
     let active = true;
     const seq = ++fetchSeqRef.current;
     fetchAll()
-      .then(([owed, waiting, unknownList, mutedList]) => {
+      .then(([owed, waiting, unknownList, mutedList, sourceList]) => {
         if (active && seq === fetchSeqRef.current) {
-          applyResults(owed, waiting, unknownList, mutedList);
+          applyResults(owed, waiting, unknownList, mutedList, sourceList);
         }
       })
       .catch((e) => {
@@ -319,6 +328,15 @@ export function App() {
   }, [refreshAll, showToast]);
 
   const visible: ListItem[] = mode === 'unknown' ? unknown : lists[mode];
+  /** Label every row with its source only when the list actually spans
+   *  more than one - on an iMessage-only Mac the chip is pure noise. */
+  const showPlatform = new Set(visible.map((x) => x.platform)).size > 1;
+  /** Sources that are silent for a reason the user can act on. A
+   *  platform whose app simply isn't installed is not a problem to
+   *  report, so `absent` is left out. */
+  const degraded = sources.filter(
+    (s) => s.state === 'blocked' || s.state === 'failed',
+  );
 
   const clearSelection = useCallback(() => {
     setSelected(new Set());
@@ -363,7 +381,13 @@ export function App() {
       } else if (mods.metaKey || selected.size > 0) {
         toggleSelect(item, index);
       } else if (isReply(item)) {
-        openChat(item.handle, item.isGroup, item.chatGuid, item.searchHint).catch(
+        openChat(
+          item.platform,
+          item.handle,
+          item.isGroup,
+          item.chatGuid,
+          item.searchHint,
+        ).catch(
           (e) => {
             const msg = String(e);
             if (msg.includes('accessibility_denied')) {
@@ -376,9 +400,13 @@ export function App() {
           },
         );
       } else {
-        openChat(item.handle, false, item.chatGuid, item.handle).catch((e) =>
-          console.error('open_chat failed', e),
-        );
+        openChat(
+          item.platform,
+          item.handle,
+          false,
+          item.chatGuid,
+          item.handle,
+        ).catch((e) => console.error('open_chat failed', e));
       }
     },
     [selected, rangeSelect, toggleSelect],
@@ -526,6 +554,7 @@ export function App() {
                   <UnknownRow
                     key={item.chatGuid}
                     item={item}
+                    showPlatform={showPlatform}
                     relative={formatRelative(item.lastDate)}
                     firstRelative={formatRelative(item.firstDate)}
                     removing={removing.has(item.chatGuid)}
@@ -542,6 +571,7 @@ export function App() {
                   <Row
                     key={item.chatGuid}
                     item={item}
+                    showPlatform={showPlatform}
                     ackLabel={
                       item.acknowledged
                         ? mode === 'owed'
@@ -608,6 +638,20 @@ export function App() {
                 Undo
               </button>
             )}
+          </div>
+        )}
+        {!loading && !error && degraded.length > 0 && (
+          <div className="source-note" role="status">
+            {degraded.map((s) => (
+              <div className="source-note__line" key={s.platform}>
+                <span className="source-note__platform">
+                  {PLATFORM_LABELS[s.platform]}
+                </span>
+                <span className="source-note__detail">
+                  {s.detail ?? 'not being read'}
+                </span>
+              </div>
+            ))}
           </div>
         )}
         {!loading && !error && muted.length > 0 && (

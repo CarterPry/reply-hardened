@@ -9,8 +9,9 @@ export function PermissionPrompt({ path, onGrant, onRetry }: PermissionPromptPro
     <div className="permission">
       <h2>Full Disk Access required</h2>
       <p>
-        This app reads your iMessage history (read-only) to find threads waiting on a reply.
-        macOS protects <code>{path}</code> behind Full Disk Access.
+        This app reads your message history (read-only) to find threads waiting on a reply.
+        macOS protects <code>{path}</code> behind Full Disk Access. One grant covers
+        iMessage, WhatsApp and Signal.
       </p>
       <ol>
         <li>

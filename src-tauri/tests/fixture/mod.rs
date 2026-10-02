@@ -14,6 +14,13 @@
 //!   - messages on macOS 13+ often have NULL `text` and carry the
 //!     string inside the typedstream-encoded `attributedBody`
 
+// Each integration test file is its own crate and uses a different
+// slice of these helpers, so unused ones are expected.
+#![allow(dead_code)]
+
+pub mod signal;
+pub mod whatsapp;
+
 use rusqlite::{params, Connection};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};

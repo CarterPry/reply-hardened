@@ -3,12 +3,17 @@ use serde::Serialize;
 /// Application error surfaced to the frontend. Serialized as a tagged
 /// union so the UI can branch on `kind` - most importantly to render
 /// the Full Disk Access prompt instead of a generic crash.
+///
+/// Shared by all three sources, so the messages name the path rather
+/// than a platform. Only iMessage failures actually reach the UI as
+/// errors; WhatsApp and Signal failures are downgraded to a
+/// `SourceStatus` line so one missing app can't blank the list.
 #[derive(Debug, thiserror::Error, Serialize, Clone)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AppError {
-    #[error("Full Disk Access required to read iMessage history at {path}")]
+    #[error("Full Disk Access required to read message history at {path}")]
     PermissionDenied { path: String },
-    #[error("iMessage database not found at {path}")]
+    #[error("Message database not found at {path}")]
     NotFound { path: String },
     #[error("Database error: {message}")]
     Database { message: String },

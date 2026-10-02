@@ -1,4 +1,29 @@
+/** The three message sources. Matches the Rust `Platform` enum. */
+export type Platform = 'imessage' | 'whatsapp' | 'signal';
+
+/** Chip text for a row's source. */
+export const PLATFORM_LABELS: Record<Platform, string> = {
+  imessage: 'iMessage',
+  whatsapp: 'WhatsApp',
+  signal: 'Signal',
+};
+
+/** Why a source contributed nothing to the lists. `ready` is the only
+ *  state that means "this platform is included in what you see". */
+export type SourceState = 'ready' | 'absent' | 'blocked' | 'failed';
+
+export interface SourceStatus {
+  platform: Platform;
+  state: SourceState;
+  /** One-line explanation, never message content. */
+  detail: string | null;
+}
+
 export interface PendingReply {
+  /** Which app this conversation lives in. */
+  platform: Platform;
+  /** State key, namespaced per platform (iMessage keeps the bare
+   *  chat guid for backward compatibility). */
   chatGuid: string;
   name: string;
   handle: string;
@@ -50,6 +75,7 @@ export interface UndoOutcome {
 
 /** A 1:1 thread from someone with no matching contact record. */
 export interface UnknownSender {
+  platform: Platform;
   chatGuid: string;
   /** Raw handle: phone number or email. */
   handle: string;
