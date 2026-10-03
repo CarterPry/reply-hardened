@@ -69,7 +69,9 @@ is never opened and raises no keychain prompt.
 - **Identity.** Names come from your address book first, on every
   platform, so one person reads the same whether they texted you on
   iMessage, WhatsApp or Signal. Only then does Repli fall back to the
-  name the app itself shows, and finally to the raw number.
+  name the app itself publishes, and finally to the raw number. On
+  WhatsApp that fallback is deliberately narrow: see the name-column
+  warning in [Limitations](#limitations).
 - **One row per conversation per platform.** The same person on two
   apps is two rows, triaged independently - replying on Signal doesn't
   clear the WhatsApp thread, because it didn't.
@@ -162,6 +164,17 @@ Tauri 2 (Rust) + React 18 + TypeScript + Vite.
 - macOS
 - Node 20+
 - Rust toolchain (`rustup`)
+
+> **Build the Rust target outside iCloud Drive.** If this checkout
+> lives under an iCloud-synced folder (`~/Documents`, `~/Desktop`),
+> point `CARGO_TARGET_DIR` somewhere else - e.g.
+> `export CARGO_TARGET_DIR=~/Library/Caches/repli-target`. iCloud
+> stamps `com.apple.fileprovider.fpfs#P` on the built `.app`, which
+> makes `codesign` fail with *"resource fork, Finder information, or
+> similar detritus not allowed"*, and syncing a multi-gigabyte target
+> directory also produces spurious `os error 60` write timeouts
+> mid-build. If you hit the codesign error anyway:
+> `xattr -cr <app> && codesign --force --deep --sign - <app>`.
 
 ## Setup
 
@@ -274,6 +287,17 @@ cargo test   --manifest-path src-tauri/Cargo.toml
   app's search field with synthesized keystrokes. It's best-effort: it
   needs the Accessibility permission and can mis-select when names are
   ambiguous.
+- **WhatsApp's name columns contain protobuf.** For `@lid` contacts
+  this store writes base64-encoded protobuf into the columns that
+  normally hold names - `ZWAGROUPMEMBER.ZFIRSTNAME` reading
+  `+CgAQgueA1gY=`, `ZWAMESSAGE.ZPUSHNAME` reading
+  `COi9hdYGIABIAZABAPABAtgC…`, and `ZWACHATSESSION.ZLASTMESSAGETEXT`
+  likewise (which is why the last message is recomputed from
+  `ZWAMESSAGE` instead of read from the session row). Repli prefers
+  `ZWAPROFILEPUSHNAME`, the one name source here that is never a blob,
+  and validates every other candidate with `plausible_name` before it
+  can reach the screen. A contact with no trustworthy name shows its
+  jid rather than a blob.
 - **WhatsApp reactions are invisible.** WhatsApp's Mac database stores
   no reactions anywhere - no table, no column - so a thread you only
   reacted to looks unanswered, and WhatsApp rows are never shown

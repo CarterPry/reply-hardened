@@ -47,3 +47,18 @@ the commit log:
 - **Opt out per source** with `ENABLE_WHATSAPP` / `ENABLE_SIGNAL` in
   `src-tauri/src/config.rs`. A disabled source is never opened, and a
   disabled Signal never raises the keychain prompt.
+- **Nothing from a message database is rendered unvalidated.** WhatsApp
+  stores base64 protobuf in its name columns, so every candidate name
+  is checked by `whatsapp::plausible_name` before display. The opt-in
+  `live_smoke` test asserts that over every real row.
+
+## Re-granting permissions after a rebuild
+
+The build is ad-hoc signed, so macOS keys its TCC grants to the
+binary's cdhash. Every rebuild produces a new hash, which silently
+voids **Full Disk Access** and **Accessibility** while leaving both
+switches looking enabled in System Settings. After installing a new
+build, toggle each one off and back on (or remove with `-` and re-add
+`/Applications/Repli Hardened.app`), then quit the app from the tray
+and reopen it - FDA only takes effect on relaunch. A Developer ID
+would make the grants survive updates; nothing else will.
