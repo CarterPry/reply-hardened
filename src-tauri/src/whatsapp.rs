@@ -14,8 +14,23 @@
 //!                     `ZMESSAGEDATE` is Core Data time (seconds since
 //!                     2001-01-01), `ZMESSAGETYPE` 6 is a system/group
 //!                     event, `ZTEXT` is NULL for media.
-//!   ZWAGROUPMEMBER  - group participants, already name-resolved by
-//!                     WhatsApp (`ZCONTACTNAME` / `ZFIRSTNAME`).
+//!   ZWAGROUPMEMBER  - group participants (`ZMEMBERJID`, plus
+//!                     `ZCONTACTNAME` / `ZFIRSTNAME` - see the warning
+//!                     below).
+//!   ZWAPROFILEPUSHNAME - jid → the name a contact publishes. This is
+//!                     the trustworthy name source; the per-row name
+//!                     columns are not.
+//!
+//! **The name columns cannot be trusted.** For `@lid` contacts this
+//! store writes base64-encoded protobuf into the very columns that
+//! normally hold names: `ZWAGROUPMEMBER.ZFIRSTNAME` holds values like
+//! `+CgAQgueA1gY=` and `ZWAMESSAGE.ZPUSHNAME` holds
+//! `COi9hdYGIABIAZABAPABAtgC…` (4,361 of 6,101 messages in the author's
+//! own store). `ZWACHATSESSION.ZLASTMESSAGETEXT` is the same kind of
+//! blob, which is why the last message is recomputed from ZWAMESSAGE
+//! rather than read from the session row. Every candidate name is
+//! therefore passed through `plausible_name` before it can reach the
+//! UI, and `ZWAPROFILEPUSHNAME` is preferred over all of them.
 //!
 //! Two honest limitations, both structural rather than lazy:
 //!   - **No reaction state.** This database stores no reactions
@@ -37,8 +52,8 @@ use crate::contacts::ContactDirectory;
 use crate::error::{AppError, AppResult};
 use crate::pending::Direction;
 use crate::replies::{
-    clean_preview, first_name, format_group_name, is_short_code, resolve_one,
-    search_hint_for_group, Filters, PendingReply,
+    clean_preview, first_name, format_group_name, is_short_code, search_hint_for_group, Filters,
+    PendingReply,
 };
 use crate::sources::Platform;
 use crate::unknown::UnknownSender;
@@ -134,8 +149,13 @@ struct SessionRow {
     timestamp: i64,
     preview: Option<String>,
     member_count: i64,
-    /// Group sender of the last message, as WhatsApp resolved it.
-    sender_name: Option<String>,
+    /// JID of the group member who sent the last message, when the
+    /// message carries one (93 inbound group messages in the author's
+    /// store do not).
+    sender_jid: Option<String>,
+    /// Name candidates WhatsApp attached to the sender, best first.
+    /// Unvalidated - `resolve_person` filters them.
+    sender_names: Vec<String>,
 }
 
 pub fn read_pending(
@@ -155,13 +175,14 @@ pub fn read_pending_at(
     filters: &Filters,
 ) -> AppResult<Vec<PendingReply>> {
     let conn = open_ro(path)?;
+    let push_names = query_push_names(&conn)?;
     let rows = query_sessions(&conn, direction)?;
     let group_pks: Vec<i64> = rows
         .iter()
         .filter(|r| is_group_jid(&r.jid))
         .map(|r| r.session_pk)
         .collect();
-    let members = query_group_members(&conn, &group_pks)?;
+    let members = query_group_members(&conn, &group_pks, dir, &push_names)?;
 
     let mut out = Vec::with_capacity(rows.len());
     for r in rows {
@@ -188,7 +209,9 @@ pub fn read_pending_at(
         };
 
         let (name, search_hint) = if is_group {
-            match non_empty(r.partner_name.as_deref()) {
+            // The group subject is user-authored, but validate it
+            // anyway - it lands in the same column family as the blobs.
+            match clean_name(r.partner_name.as_deref()) {
                 Some(subject) => (subject.to_string(), subject.to_string()),
                 None => (
                     format_group_name(&participants),
@@ -196,15 +219,9 @@ pub fn read_pending_at(
                 ),
             }
         } else {
-            // Prefer the user's own address book so a person reads the
-            // same on every platform, then WhatsApp's name, then the
-            // number.
-            let resolved = phone
-                .as_deref()
-                .and_then(|p| dir.lookup(p).map(str::to_string))
-                .or_else(|| non_empty(r.partner_name.as_deref()).map(str::to_string))
-                .or_else(|| phone.clone())
-                .unwrap_or_else(|| r.jid.clone());
+            let resolved =
+                resolve_person(Some(&r.jid), &[r.partner_name.as_deref()], dir, &push_names)
+                    .unwrap_or_else(|| r.jid.clone());
             (resolved.clone(), resolved)
         };
 
@@ -226,7 +243,10 @@ pub fn read_pending_at(
             service: Some("WhatsApp".to_string()),
             participants,
             last_sender: if is_group {
-                r.sender_name.as_deref().map(|s| first_name(s).to_string())
+                let candidates: Vec<Option<&str>> =
+                    r.sender_names.iter().map(|s| Some(s.as_str())).collect();
+                resolve_person(r.sender_jid.as_deref(), &candidates, dir, &push_names)
+                    .map(|n| first_name(&n).to_string())
             } else {
                 None
             },
@@ -319,11 +339,11 @@ fn query_sessions(conn: &Connection, direction: Direction) -> AppResult<Vec<Sess
             timestamp: core_data_to_unix(date),
             preview: row.get::<_, Option<String>>("msg_text")?,
             member_count: row.get("member_count")?,
-            sender_name: non_empty(member_name.as_deref())
-                .or_else(|| non_empty(member_first.as_deref()))
-                .or_else(|| non_empty(push_name.as_deref()))
-                .map(str::to_string)
-                .or_else(|| member_jid.as_deref().and_then(jid_phone)),
+            sender_jid: member_jid,
+            sender_names: [member_name, member_first, push_name]
+                .into_iter()
+                .flatten()
+                .collect(),
         })
     })?;
     let mut out = Vec::new();
@@ -337,10 +357,13 @@ fn query_sessions(conn: &Connection, direction: Direction) -> AppResult<Vec<Sess
     Ok(out)
 }
 
-/// Participant display names per group session, in a stable order.
+/// Participant display names per group session, in a stable order,
+/// resolved through `resolve_person` so no blob can become a name.
 fn query_group_members(
     conn: &Connection,
     session_pks: &[i64],
+    dir: &ContactDirectory,
+    push_names: &HashMap<String, String>,
 ) -> AppResult<HashMap<i64, Vec<String>>> {
     let mut out: HashMap<i64, Vec<String>> = HashMap::new();
     if session_pks.is_empty() {
@@ -365,12 +388,14 @@ fn query_group_members(
             let name: Option<String> = row.get(1)?;
             let first: Option<String> = row.get(2)?;
             let jid: Option<String> = row.get(3)?;
-            let label = non_empty(name.as_deref())
-                .or_else(|| non_empty(first.as_deref()))
-                .map(str::to_string)
-                .or_else(|| jid.as_deref().and_then(jid_phone))
-                .or(jid)
-                .unwrap_or_else(|| "Unknown".to_string());
+            let label = resolve_person(
+                jid.as_deref(),
+                &[name.as_deref(), first.as_deref()],
+                dir,
+                push_names,
+            )
+            .or_else(|| jid.clone())
+            .unwrap_or_else(|| "Unknown".to_string());
             Ok((session, label))
         })?;
         for r in rows {
@@ -471,15 +496,119 @@ pub fn read_unknown_at(
     Ok(out)
 }
 
+/// jid → published profile name, for every name this store actually
+/// vouches for. Small (a few hundred rows) and the only name source
+/// here that is never a protobuf blob - though it is validated too,
+/// on principle.
+fn query_push_names(conn: &Connection) -> AppResult<HashMap<String, String>> {
+    let mut out = HashMap::new();
+    let mut stmt = conn.prepare(
+        "SELECT ZJID, ZPUSHNAME FROM ZWAPROFILEPUSHNAME
+         WHERE ZJID IS NOT NULL AND ZPUSHNAME IS NOT NULL",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for r in rows {
+        let (jid, name) = r?;
+        if let Some(clean) = clean_name(Some(&name)) {
+            out.insert(jid, clean.to_string());
+        }
+    }
+    Ok(out)
+}
+
+/// The one name-resolution chain, used for 1:1 partners, group
+/// participants and message senders alike:
+///   1. the user's own address book, by phone number - so a person
+///      reads the same on every platform;
+///   2. WhatsApp's `ZWAPROFILEPUSHNAME` table, keyed by jid;
+///   3. whatever name candidates the row carried, validated;
+///   4. the phone number.
+///
+/// Returns None when nothing survives (an `@lid` contact with no
+/// profile name has no usable label at all).
+fn resolve_person(
+    jid: Option<&str>,
+    row_names: &[Option<&str>],
+    dir: &ContactDirectory,
+    push_names: &HashMap<String, String>,
+) -> Option<String> {
+    let phone = jid.and_then(jid_phone);
+    if let Some(name) = phone.as_deref().and_then(|p| dir.lookup(p)) {
+        return Some(name.to_string());
+    }
+    if let Some(name) = jid.and_then(|j| push_names.get(j)) {
+        return Some(name.clone());
+    }
+    for candidate in row_names {
+        if let Some(name) = clean_name(*candidate) {
+            return Some(name.to_string());
+        }
+    }
+    phone
+}
+
+/// Trim, then drop anything that isn't plausibly a name.
+fn clean_name(s: Option<&str>) -> Option<&str> {
+    non_empty(s).filter(|t| plausible_name(t))
+}
+
 fn non_empty(s: Option<&str>) -> Option<&str> {
     s.map(str::trim).filter(|s| !s.is_empty())
 }
 
-/// Unused outside the resolver, but keeps the contact-name path honest
-/// if a future change wants raw-handle resolution like iMessage's.
-#[allow(dead_code)]
-fn resolve_phone(phone: &str, dir: &ContactDirectory) -> String {
-    resolve_one(phone, dir)
+/// Could this string be a human-readable display name?
+///
+/// Guards against the base64 protobuf this store writes into its name
+/// columns (see the module header). Showing `+CgAQgueA1gY=` where a
+/// person's name belongs is worse than showing their phone number.
+///
+/// The rule matches the *blob signature* rather than demanding a name
+/// look conventional, because labels in the wild are messier than any
+/// guess about them: group chats get named `🐯-🦈`, and an unnamed
+/// group's composed label can read `+12135514874, Adina +9`. Both of
+/// those are real and both must survive. So a string is rejected only
+/// when it carries base64 padding, is a bare identifier, or is long,
+/// space-free, and mixes letters with digits inside the base64
+/// alphabet.
+pub fn plausible_name(s: &str) -> bool {
+    let t = s.trim();
+    if t.is_empty() {
+        return false;
+    }
+    // Base64 padding never appears in a name.
+    if t.ends_with('=') {
+        return false;
+    }
+    // A bare run of digits is an identifier, not a name.
+    if t.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    // A phone number is a legitimate last-resort label.
+    let phone_shaped = t.strip_prefix('+').is_some_and(|rest| {
+        !rest.is_empty()
+            && rest
+                .chars()
+                .all(|c| c.is_ascii_digit() || matches!(c, ' ' | '-' | '(' | ')' | '.'))
+    });
+    if phone_shaped {
+        return true;
+    }
+    // The blobs are long, space-free, and mix letters with digits
+    // inside the base64 alphabet. Real handles shaped like that
+    // ("Sarah1234567890") are rarer than the blobs, and the fallback
+    // is a phone number rather than nothing.
+    let has_space = t.chars().any(char::is_whitespace);
+    let has_digit = t.chars().any(|c| c.is_ascii_digit());
+    let has_letter = t.chars().any(|c| c.is_ascii_alphabetic());
+    let base64_alphabet = t
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '='));
+    if !has_space && has_digit && has_letter && base64_alphabet && t.chars().count() >= 12 {
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]
@@ -516,6 +645,42 @@ mod tests {
         assert!(is_feed_jid("status@broadcast"));
         assert!(is_feed_jid("0123@newsletter"));
         assert!(!is_feed_jid("1203630@g.us"));
+    }
+
+    #[test]
+    fn plausible_name_rejects_the_stores_protobuf_blobs() {
+        // Verbatim values from a real ChatStorage.sqlite.
+        assert!(!plausible_name("+CgAQgueA1gY="));
+        assert!(!plausible_name("COi9hdYGIABIAZABAPABAtgC+8rT09"));
+        assert!(!plausible_name("CMfngNYGIAA6FDNCRjk5QTRGNkQ5Rj"));
+        assert!(!plausible_name("EID1JCoICID1JBACGABIAGIkRTNGMzJCN0EtQ0RG"));
+        assert!(!plausible_name(""));
+        assert!(!plausible_name("   "));
+        // A bare identifier is not a name.
+        assert!(!plausible_name("12345"));
+    }
+
+    #[test]
+    fn plausible_name_keeps_real_names_and_numbers() {
+        assert!(plausible_name("Ana Diaz"));
+        assert!(plausible_name("Jacob"));
+        assert!(plausible_name("JacobRintamaki"));
+        assert!(plausible_name("Jacob <> David"));
+        assert!(plausible_name("Ana-Maria O'Brien"));
+        assert!(plausible_name("张伟"));
+        assert!(plausible_name("Mr2000"));
+        // Group chats get named things like this; an over-strict rule
+        // that dropped them would be worse than the bug it fixes.
+        assert!(plausible_name("🐯-🦈"));
+        assert!(plausible_name("🏠"));
+        assert!(plausible_name("Flat 3 🍳"));
+        // Phone-shaped strings are a legitimate last-resort label.
+        assert!(plausible_name("+15551234567"));
+        assert!(plausible_name("+1 (555) 123-4567"));
+        // A composed group label, verbatim from a real run: a '+' that
+        // starts a phone number but keeps going into names.
+        assert!(plausible_name("+12135514874, Adina +9"));
+        assert!(plausible_name("Mom, Dad +2"));
     }
 
     #[test]

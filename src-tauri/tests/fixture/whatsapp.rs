@@ -68,6 +68,11 @@ impl WaFixture {
                 ZCONTACTNAME VARCHAR,
                 ZFIRSTNAME VARCHAR,
                 ZISACTIVE INTEGER DEFAULT 1
+            );
+            CREATE TABLE ZWAPROFILEPUSHNAME (
+                Z_PK INTEGER PRIMARY KEY,
+                ZJID VARCHAR,
+                ZPUSHNAME VARCHAR
             );",
         )
         .expect("create whatsapp fixture schema");
@@ -121,14 +126,38 @@ impl WaFixture {
     /// A group participant, already name-resolved the way WhatsApp
     /// stores them. Returns the member row id for use as a sender.
     pub fn member(&mut self, session_pk: i64, jid: &str, name: Option<&str>) -> i64 {
+        self.member_raw(session_pk, jid, name, name)
+    }
+
+    /// A participant whose `ZCONTACTNAME` and `ZFIRSTNAME` are set
+    /// independently - how `@lid` contacts really look, where the name
+    /// columns can hold base64 protobuf instead of a name.
+    pub fn member_raw(
+        &mut self,
+        session_pk: i64,
+        jid: &str,
+        contact_name: Option<&str>,
+        first_name: Option<&str>,
+    ) -> i64 {
         self.conn
             .execute(
                 "INSERT INTO ZWAGROUPMEMBER (ZCHATSESSION, ZMEMBERJID, ZCONTACTNAME, ZFIRSTNAME)
                  VALUES (?1, ?2, ?3, ?4)",
-                params![session_pk, jid, name, name],
+                params![session_pk, jid, contact_name, first_name],
             )
             .expect("insert member");
         self.conn.last_insert_rowid()
+    }
+
+    /// A row in WhatsApp's profile push-name table - the one name
+    /// source in this store that is actually trustworthy.
+    pub fn push_name(&mut self, jid: &str, name: &str) {
+        self.conn
+            .execute(
+                "INSERT INTO ZWAPROFILEPUSHNAME (ZJID, ZPUSHNAME) VALUES (?1, ?2)",
+                params![jid, name],
+            )
+            .expect("insert push name");
     }
 
     /// A message `secs_ago` seconds in the past.

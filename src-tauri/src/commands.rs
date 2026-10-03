@@ -418,6 +418,14 @@ fn app_search(platform: Platform, query: &str) -> Result<(), String> {
         return Err("no searchable name for this chat".to_string());
     }
     let app = platform.app_name();
+    // Messages filters its sidebar as you type; WhatsApp (Catalyst)
+    // and Signal (Electron) both need noticeably longer before the
+    // first result is selectable, and pressing Return early just
+    // re-opens whatever thread was already showing.
+    let settle = match platform {
+        Platform::IMessage => "0.6",
+        Platform::WhatsApp | Platform::Signal => "1.0",
+    };
     let safe_query = query.replace('\\', "\\\\").replace('"', "\\\"");
     // `reopen` restores a window when the app is running windowless -
     // otherwise ⌘F lands nowhere.
@@ -430,7 +438,7 @@ tell application "System Events"
         keystroke "f" using {{command down}}
         delay 0.25
         keystroke "{safe_query}"
-        delay 0.6
+        delay {settle}
         key code 36
     end tell
 end tell"#

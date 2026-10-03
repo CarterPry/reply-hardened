@@ -401,6 +401,80 @@ fn w13_unknown_senders_are_numbers_with_no_contact() {
     assert!(rows[0].first_date < rows[0].last_date);
 }
 
+/// Regression: WhatsApp writes base64 protobuf into its name columns
+/// for `@lid` contacts. None of it may reach the UI as a person's
+/// name - the profile push-name table wins, and a blob never does.
+///
+/// The strings here are verbatim from a real store, where this bug
+/// rendered a row's meta line as "+CgAQgueA1gY=: Hopping on one second".
+#[test]
+fn w14_protobuf_blobs_never_become_names() {
+    let mut fx = WaFixture::new();
+    let s = fx.session("1203634@g.us", Some("Jacob <> David"));
+    // The sender: no contact name, a blob in ZFIRSTNAME, and a real
+    // name available only in ZWAPROFILEPUSHNAME.
+    let jacob = fx.member_raw(s, "120692926361647@lid", None, Some("+CgAQgueA1gY="));
+    fx.push_name("120692926361647@lid", "Jacob R");
+    // A second member with a blob and NO push name: must fall back to
+    // the jid, never to the blob.
+    fx.member_raw(s, "215152175652912@lid", None, Some("+CgAQgueA1gY="));
+    // ZPUSHNAME on the message is blob too.
+    fx.message_full(
+        s,
+        false,
+        3600,
+        Some("Hopping on one second"),
+        0,
+        Some(jacob),
+        Some("COi9hdYGIABIAZABAPABAtgC+8rT09"),
+    );
+
+    let rows = run_wa(
+        &fx,
+        Direction::Owed,
+        &ContactDirectory::default(),
+        &Local::default(),
+    );
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!(row.last_sender.as_deref(), Some("Jacob"));
+    assert_eq!(row.preview.as_deref(), Some("Hopping on one second"));
+    for label in row.participants.iter().chain(std::iter::once(&row.name)) {
+        assert!(
+            !label.contains("CgAQgueA1gY") && !label.contains("COi9hdYG"),
+            "blob leaked into a label: {label}"
+        );
+    }
+    // The member with no trustworthy name shows its jid, not a blob.
+    assert!(row.participants.iter().any(|p| p == "215152175652912@lid"));
+}
+
+/// The address book still outranks WhatsApp's push-name table, so a
+/// person reads the same on every platform.
+#[test]
+fn w15_address_book_outranks_the_push_name_table() {
+    let mut fx = WaFixture::new();
+    let s = fx.session("15551110000@s.whatsapp.net", Some("+CgAQgueA1gY="));
+    fx.push_name("15551110000@s.whatsapp.net", "ana from whatsapp");
+    fx.message(s, false, 3600, Some("hi"));
+
+    // No contact: the push name is used, and the blob partner name is
+    // ignored.
+    let rows = run_wa(
+        &fx,
+        Direction::Owed,
+        &ContactDirectory::default(),
+        &Local::default(),
+    );
+    assert_eq!(rows[0].name, "ana from whatsapp");
+
+    // With a contact, the address book wins.
+    let mut dir = ContactDirectory::default();
+    dir.insert_phone("+15551110000", "Ana Diaz");
+    let rows = run_wa(&fx, Direction::Owed, &dir, &Local::default());
+    assert_eq!(rows[0].name, "Ana Diaz");
+}
+
 // ---------------------------------------------------------------- s*
 
 /// Incoming last → you owe. Outgoing last (and old enough) → waiting.

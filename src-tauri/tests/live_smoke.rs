@@ -46,11 +46,32 @@ fn describe(label: &str, rows: &[PendingReply]) {
         rows.len()
     );
     // Every row must be renderable: a name to show and a state key to
-    // triage with.
+    // triage with - and the name must actually look like a name. That
+    // last check is the one that catches WhatsApp writing base64
+    // protobuf into its name columns, which no fixture can predict the
+    // shape of. Failures print the offending label, which is the one
+    // case where seeing real data is the point.
     for r in rows {
         assert!(!r.name.trim().is_empty(), "row with no display name");
         assert!(!r.chat_guid.trim().is_empty(), "row with no state key");
         assert!(r.timestamp > 0, "row with no timestamp");
+        assert!(
+            repli_lib::whatsapp::plausible_name(&r.name),
+            "implausible display name: {:?}",
+            r.name
+        );
+        if let Some(sender) = r.last_sender.as_deref() {
+            assert!(
+                repli_lib::whatsapp::plausible_name(sender),
+                "implausible sender name: {sender:?}"
+            );
+        }
+        for p in &r.participants {
+            assert!(
+                repli_lib::whatsapp::plausible_name(p) || p.contains('@'),
+                "implausible participant label: {p:?}"
+            );
+        }
     }
 }
 
