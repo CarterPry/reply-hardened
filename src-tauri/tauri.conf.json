@@ -29,7 +29,8 @@
     "active": true,
     "targets": "all",
     "macOS": {
-      "signingIdentity": "-"
+      "_comment": "Never ad-hoc sign (\"-\"). TCC pins an ad-hoc grant to the build's cdhash, so every rebuild silently voids Full Disk Access / Accessibility while System Settings still shows the switch ON. A Developer ID gives a stable designated requirement, so the grants survive rebuilds.",
+      "signingIdentity": "Apple Development: carterpry@gmail.com (S8FJ2X697A)"
     },
     "icon": [
       "icons/32x32.png",
