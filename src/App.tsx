@@ -394,6 +394,12 @@ export function App() {
               setBanner('accessibility');
             } else if (msg.includes('automation_denied')) {
               setBanner('automation');
+            } else if (msg.includes('search_filled')) {
+              // WhatsApp has no way to open a chat directly and its
+              // search results are recency-ordered, so the chat is
+              // found but not opened. Say so rather than letting the
+              // click look ignored.
+              showToast('Searched in WhatsApp — click the chat there', false);
             } else {
               console.error('open_chat failed', e);
             }
@@ -406,10 +412,16 @@ export function App() {
           false,
           item.chatGuid,
           item.handle,
-        ).catch((e) => console.error('open_chat failed', e));
+        ).catch((e) => {
+          if (String(e).includes('search_filled')) {
+            showToast('Searched in WhatsApp — click the chat there', false);
+          } else {
+            console.error('open_chat failed', e);
+          }
+        });
       }
     },
-    [selected, rangeSelect, toggleSelect],
+    [selected, rangeSelect, toggleSelect, showToast],
   );
 
   /** Switch tabs and drop the selection - it belongs to one list. */

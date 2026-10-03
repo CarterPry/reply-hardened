@@ -409,11 +409,32 @@ fn open_url(url: &str) -> Result<(), String> {
 fn search_script(platform: Platform, query: &str) -> String {
     let app = platform.app_name();
     // Messages filters its sidebar as you type; WhatsApp (Catalyst)
-    // and Signal (Electron) are slower to rank the first result, and
-    // Return before they have ranked it opens the wrong thread.
+    // and Signal (Electron) are slower to populate their results.
     let settle = match platform {
         Platform::IMessage => "0.6",
         Platform::WhatsApp | Platform::Signal => "1.0",
+    };
+    // How each app turns a filled search box into an open chat, which
+    // is a different answer for all three and is observed behavior,
+    // not a guess:
+    //
+    //   Messages - Return on the focused field opens the top hit.
+    //   Signal   - the result list has to be entered first (key code
+    //              125 = Down), then Return opens the selection.
+    //              Signal lists matching conversations above message
+    //              hits, so the first one is the right one.
+    //   WhatsApp - Return does nothing at all, and its results are
+    //              ordered by recency rather than by how well they
+    //              match: searching "S25 x The Landing 🔥✨" returned
+    //              David Gelberg, Daniel Patel, and only then the
+    //              group itself. There is no keystroke that reliably
+    //              picks the right row, so we stop at the filled
+    //              search box and say so, rather than opening someone
+    //              else's conversation.
+    let activate = match platform {
+        Platform::IMessage => "        key code 36\n",
+        Platform::Signal => "        key code 125\n        delay 0.2\n        key code 36\n",
+        Platform::WhatsApp => "",
     };
     // AppleScript string literals take backslash and quote escapes;
     // a chat named `say "hi"` must not end the literal early.
@@ -448,8 +469,7 @@ tell application "System Events"
         delay 0.25
         keystroke "v" using {{command down}}
         delay {settle}
-        key code 36
-    end tell
+{activate}    end tell
 end tell
 delay 0.3
 try
@@ -480,6 +500,12 @@ fn app_search(platform: Platform, query: &str) -> Result<(), String> {
         .output()
         .map_err(|e| format!("opening chat in {app}: {e}"))?;
     if out.status.success() {
+        // WhatsApp's search is filled in but nothing was opened - see
+        // `search_script`. Tell the frontend so it can say that
+        // plainly instead of leaving the click looking ignored.
+        if platform == Platform::WhatsApp {
+            return Err("search_filled".to_string());
+        }
         return Ok(());
     }
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -509,10 +535,32 @@ mod tests {
             assert!(script.contains(r#"keystroke "v" using {command down}"#));
             // Typing it would mangle anything outside the BMP.
             assert!(!script.contains(r#"keystroke "David Gelberg""#));
-            let paste = script.find(r#"keystroke "v""#).expect("pastes");
-            let ret = script.find("key code 36").expect("presses return");
-            assert!(paste < ret, "{app}: paste must precede Return");
         }
+    }
+
+    /// Each app needs a different final step, and all three are
+    /// observed behavior rather than a guess - see `search_script`.
+    #[test]
+    fn each_app_gets_the_activation_step_that_works_for_it() {
+        // Messages: Return straight from the search field.
+        let messages = search_script(Platform::IMessage, "Mom");
+        let paste = messages.find(r#"keystroke "v""#).expect("pastes");
+        assert!(messages.find("key code 36").expect("returns") > paste);
+        assert!(!messages.contains("key code 125"));
+
+        // Signal: enter the result list, then Return.
+        let signal = search_script(Platform::Signal, "Mom");
+        let down = signal.find("key code 125").expect("enters the list");
+        let ret = signal.find("key code 36").expect("returns");
+        assert!(down < ret);
+
+        // WhatsApp: no activation at all. Return does nothing there,
+        // and its results are recency-ordered, so any keystroke that
+        // "picked a result" would pick the wrong conversation.
+        let whatsapp = search_script(Platform::WhatsApp, "Mom");
+        assert!(whatsapp.contains(r#"keystroke "v""#));
+        assert!(!whatsapp.contains("key code 36"));
+        assert!(!whatsapp.contains("key code 125"));
     }
 
     /// The bug this mechanism exists for: a chat named "Carter 🐐" was
@@ -552,7 +600,7 @@ mod tests {
     }
 
     #[test]
-    fn slower_apps_get_a_longer_settle_before_return() {
+    fn slower_apps_get_a_longer_settle() {
         assert!(search_script(Platform::IMessage, "Mom").contains("delay 0.6"));
         assert!(search_script(Platform::WhatsApp, "Mom").contains("delay 1.0"));
         assert!(search_script(Platform::Signal, "Mom").contains("delay 1.0"));

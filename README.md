@@ -281,12 +281,25 @@ cargo test   --manifest-path src-tauri/Cargo.toml
 
 ## Limitations
 
-- **No group deep-linking, and no Signal deep-linking at all.** macOS
-  offers no URL scheme that opens an existing group conversation, and
-  Signal Desktop offers none for any conversation, so Repli drives the
-  app's search field with synthesized keystrokes. It's best-effort: it
-  needs the Accessibility permission and can mis-select when names are
-  ambiguous.
+- **Opening a chat is only deterministic where a URL scheme exists.**
+  That means iMessage 1:1 (`imessage://`) and WhatsApp 1:1 with a phone
+  number (`whatsapp://send?phone=`). Everything else is opened by
+  filling the app's own search box - the name is put on the clipboard
+  and pasted (typing it would mangle any emoji, and plenty of chats
+  have one), which needs the Accessibility permission. What happens
+  next differs per app, and each case below is observed, not assumed:
+  - **Messages** opens the top hit when Return is pressed in the
+    search field.
+  - **Signal** needs the result list entered first (Down, then
+    Return). It lists matching conversations above message hits, so
+    the first one is the right one.
+  - **WhatsApp** does nothing on Return, and orders results by
+    recency rather than by match: searching `S25 x The Landing 🔥✨`
+    returns two unrelated recent chats before the group itself. No
+    keystroke reliably picks the right row, so Repli stops at the
+    filled search box and says "Searched in WhatsApp - click the chat
+    there". One click, rather than a chance of opening someone else's
+    conversation.
 - **WhatsApp's name columns contain protobuf.** For `@lid` contacts
   this store writes base64-encoded protobuf into the columns that
   normally hold names - `ZWAGROUPMEMBER.ZFIRSTNAME` reading
