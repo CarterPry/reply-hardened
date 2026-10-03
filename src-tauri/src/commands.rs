@@ -409,41 +409,52 @@ fn open_url(url: &str) -> Result<(), String> {
 fn search_script(platform: Platform, query: &str) -> String {
     let app = platform.app_name();
     // Messages filters its sidebar as you type; WhatsApp (Catalyst)
-    // and Signal (Electron) both need noticeably longer before the
-    // first result is selectable, and pressing Return early just
-    // re-opens whatever thread was already showing.
+    // and Signal (Electron) are slower to rank the first result, and
+    // Return before they have ranked it opens the wrong thread.
     let settle = match platform {
         Platform::IMessage => "0.6",
         Platform::WhatsApp | Platform::Signal => "1.0",
     };
-    // In Messages, Return on the focused search field opens the top
-    // hit. WhatsApp's Catalyst search and Signal's Electron one keep
-    // focus in the text field, where Return does nothing useful - the
-    // selection has to be moved into the result list first (key code
-    // 125 = Down). Harmless where Return alone would have worked:
-    // Down lands on the first result either way.
-    let select_first = match platform {
-        Platform::IMessage => "",
-        Platform::WhatsApp | Platform::Signal => "        key code 125\n        delay 0.2\n",
-    };
     // AppleScript string literals take backslash and quote escapes;
     // a chat named `say "hi"` must not end the literal early.
     let safe_query = query.replace('\\', "\\\\").replace('"', "\\\"");
+    // Paste the query rather than `keystroke` it.
+    //
+    // System Events cannot type characters outside the BMP: a Signal
+    // chat named "Carter 🐐" came out as "Carter aa", which matched no
+    // conversation, so the search fell through to message hits and
+    // opened an unrelated thread. The clipboard carries any Unicode
+    // exactly, so ⌘V always types what the row actually says.
+    //
+    // The user's clipboard is saved and put back afterwards. Only text
+    // survives that round trip - a copied image or file is lost, which
+    // is the cost of being able to open a chat whose name contains an
+    // emoji at all.
+    //
     // `reopen` restores a window when the app is running windowless -
     // otherwise ⌘F lands nowhere.
     format!(
-        r#"tell application "{app}" to reopen
+        r#"set savedClipboard to missing value
+try
+    set savedClipboard to the clipboard as text
+end try
+set the clipboard to "{safe_query}"
+tell application "{app}" to reopen
 tell application "{app}" to activate
 delay 0.4
 tell application "System Events"
     tell process "{app}"
         keystroke "f" using {{command down}}
         delay 0.25
-        keystroke "{safe_query}"
+        keystroke "v" using {{command down}}
         delay {settle}
-{select_first}        key code 36
+        key code 36
     end tell
-end tell"#
+end tell
+delay 0.3
+try
+    if savedClipboard is not missing value then set the clipboard to savedClipboard
+end try"#
     )
 }
 
@@ -486,40 +497,64 @@ mod tests {
     use super::*;
 
     #[test]
-    fn imessage_search_presses_return_without_moving_the_selection() {
-        let script = search_script(Platform::IMessage, "Mom Dad");
-        assert!(script.contains(r#"tell process "Messages""#));
-        assert!(script.contains(r#"keystroke "Mom Dad""#));
-        assert!(script.contains("key code 36"));
-        // No Down: Messages opens the top hit straight from the field.
-        assert!(!script.contains("key code 125"));
-    }
-
-    #[test]
-    fn whatsapp_and_signal_select_the_first_result_before_return() {
+    fn the_query_is_pasted_not_typed() {
         for (platform, app) in [
+            (Platform::IMessage, "Messages"),
             (Platform::WhatsApp, "WhatsApp"),
             (Platform::Signal, "Signal"),
         ] {
             let script = search_script(platform, "David Gelberg");
             assert!(script.contains(&format!(r#"tell process "{app}""#)));
-            let down = script.find("key code 125").expect("selects first result");
+            assert!(script.contains(r#"set the clipboard to "David Gelberg""#));
+            assert!(script.contains(r#"keystroke "v" using {command down}"#));
+            // Typing it would mangle anything outside the BMP.
+            assert!(!script.contains(r#"keystroke "David Gelberg""#));
+            let paste = script.find(r#"keystroke "v""#).expect("pastes");
             let ret = script.find("key code 36").expect("presses return");
-            assert!(down < ret, "{app}: Down must come before Return");
-            // Slower apps get a longer settle before the selection moves.
-            assert!(script.contains("delay 1.0"));
+            assert!(paste < ret, "{app}: paste must precede Return");
         }
+    }
+
+    /// The bug this mechanism exists for: a chat named "Carter 🐐" was
+    /// typed as "Carter aa", matched no conversation, and opened an
+    /// unrelated thread.
+    #[test]
+    fn astral_plane_characters_survive_into_the_query() {
+        let script = search_script(Platform::Signal, "Carter 🐐");
+        assert!(script.contains(r#"set the clipboard to "Carter 🐐""#));
+        assert!(!script.contains("Carter aa"));
+    }
+
+    #[test]
+    fn the_users_clipboard_is_saved_and_restored() {
+        let script = search_script(Platform::Signal, "Mom");
+        let save = script
+            .find("set savedClipboard to the clipboard as text")
+            .expect("saves the clipboard");
+        let set = script
+            .find(r#"set the clipboard to "Mom""#)
+            .expect("sets it");
+        let restore = script
+            .find("set the clipboard to savedClipboard")
+            .expect("restores it");
+        assert!(save < set && set < restore, "save → use → restore");
     }
 
     #[test]
     fn a_quoted_chat_name_cannot_break_out_of_the_applescript_literal() {
         let script = search_script(Platform::Signal, r#"say "hi" \ now"#);
-        assert!(script.contains(r#"keystroke "say \"hi\" \\ now""#));
-        // The literal still closes exactly once per keystroke line.
+        assert!(script.contains(r#"set the clipboard to "say \"hi\" \\ now""#));
         let line = script
             .lines()
-            .find(|l| l.trim_start().starts_with("keystroke \"say"))
-            .expect("keystroke line");
+            .find(|l| l.starts_with("set the clipboard to \"say"))
+            .expect("clipboard line");
         assert!(line.trim_end().ends_with('"'));
+    }
+
+    #[test]
+    fn slower_apps_get_a_longer_settle_before_return() {
+        assert!(search_script(Platform::IMessage, "Mom").contains("delay 0.6"));
+        assert!(search_script(Platform::WhatsApp, "Mom").contains("delay 1.0"));
+        assert!(search_script(Platform::Signal, "Mom").contains("delay 1.0"));
     }
 }
