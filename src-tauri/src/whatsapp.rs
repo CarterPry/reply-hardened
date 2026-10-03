@@ -17,9 +17,10 @@
 //!   ZWAGROUPMEMBER  - group participants (`ZMEMBERJID`, plus
 //!                     `ZCONTACTNAME` / `ZFIRSTNAME` - see the warning
 //!                     below).
-//!   ZWAPROFILEPUSHNAME - jid → the name a contact publishes. This is
-//!                     the trustworthy name source; the per-row name
-//!                     columns are not.
+//!   ZWAPROFILEPUSHNAME - jid → the name a contact publishes for
+//!                     themselves. A clean fallback, but not what
+//!                     WhatsApp displays: see the precedence note on
+//!                     `NameBook`.
 //!
 //! **The name columns cannot be trusted.** For `@lid` contacts this
 //! store writes base64-encoded protobuf into the very columns that
@@ -175,14 +176,14 @@ pub fn read_pending_at(
     filters: &Filters,
 ) -> AppResult<Vec<PendingReply>> {
     let conn = open_ro(path)?;
-    let push_names = query_push_names(&conn)?;
+    let book = load_name_book(&conn)?;
     let rows = query_sessions(&conn, direction)?;
     let group_pks: Vec<i64> = rows
         .iter()
         .filter(|r| is_group_jid(&r.jid))
         .map(|r| r.session_pk)
         .collect();
-    let members = query_group_members(&conn, &group_pks, dir, &push_names)?;
+    let members = query_group_members(&conn, &group_pks, dir, &book)?;
 
     let mut out = Vec::with_capacity(rows.len());
     for r in rows {
@@ -219,9 +220,8 @@ pub fn read_pending_at(
                 ),
             }
         } else {
-            let resolved =
-                resolve_person(Some(&r.jid), &[r.partner_name.as_deref()], dir, &push_names)
-                    .unwrap_or_else(|| r.jid.clone());
+            let resolved = resolve_person(Some(&r.jid), &[r.partner_name.as_deref()], dir, &book)
+                .unwrap_or_else(|| r.jid.clone());
             (resolved.clone(), resolved)
         };
 
@@ -245,7 +245,7 @@ pub fn read_pending_at(
             last_sender: if is_group {
                 let candidates: Vec<Option<&str>> =
                     r.sender_names.iter().map(|s| Some(s.as_str())).collect();
-                resolve_person(r.sender_jid.as_deref(), &candidates, dir, &push_names)
+                resolve_person(r.sender_jid.as_deref(), &candidates, dir, &book)
                     .map(|n| first_name(&n).to_string())
             } else {
                 None
@@ -363,7 +363,7 @@ fn query_group_members(
     conn: &Connection,
     session_pks: &[i64],
     dir: &ContactDirectory,
-    push_names: &HashMap<String, String>,
+    book: &NameBook,
 ) -> AppResult<HashMap<i64, Vec<String>>> {
     let mut out: HashMap<i64, Vec<String>> = HashMap::new();
     if session_pks.is_empty() {
@@ -392,7 +392,7 @@ fn query_group_members(
                 jid.as_deref(),
                 &[name.as_deref(), first.as_deref()],
                 dir,
-                push_names,
+                book,
             )
             .or_else(|| jid.clone())
             .unwrap_or_else(|| "Unknown".to_string());
@@ -496,16 +496,51 @@ pub fn read_unknown_at(
     Ok(out)
 }
 
-/// jid → published profile name, for every name this store actually
-/// vouches for. Small (a few hundred rows) and the only name source
-/// here that is never a protobuf blob - though it is validated too,
-/// on principle.
-fn query_push_names(conn: &Connection) -> AppResult<HashMap<String, String>> {
+/// The store's two jid-keyed name sources, in trust order.
+///
+/// **Precedence matters more than cleanliness here.** A name is not
+/// just a label: for any chat without a phone number (every `@lid`
+/// contact, every group) the only way to open the thread is to type
+/// the name into the app's own search, so a name WhatsApp does not
+/// recognize cannot open anything. `ZPARTNERNAME` is the label
+/// WhatsApp displays and searches by; `ZWAPROFILEPUSHNAME` is whatever
+/// the contact set for themselves, and the two disagree for 29 of 66
+/// chats in the author's store - `215152175652912@lid` is
+/// "David Gelberg" to WhatsApp and "And David Says" to himself.
+/// Preferring the push name there produced a row that searched for
+/// "And David Says" and found nothing.
+///
+/// So: names you or WhatsApp assigned beat names the contact assigned
+/// themselves, and the push-name table exists for the case that
+/// started all this - `@lid` rows whose own name columns hold protobuf.
+struct NameBook {
+    /// jid → `ZWACHATSESSION.ZPARTNERNAME` of that person's 1:1 chat.
+    session_labels: HashMap<String, String>,
+    /// jid → the name the contact publishes for themselves.
+    push_names: HashMap<String, String>,
+}
+
+fn load_name_book(conn: &Connection) -> AppResult<NameBook> {
+    Ok(NameBook {
+        session_labels: query_name_map(
+            conn,
+            "SELECT ZCONTACTJID, ZPARTNERNAME FROM ZWACHATSESSION
+             WHERE ZCONTACTJID IS NOT NULL AND ZPARTNERNAME IS NOT NULL
+               AND ZCONTACTJID NOT LIKE '%@g.us'",
+        )?,
+        push_names: query_name_map(
+            conn,
+            "SELECT ZJID, ZPUSHNAME FROM ZWAPROFILEPUSHNAME
+             WHERE ZJID IS NOT NULL AND ZPUSHNAME IS NOT NULL",
+        )?,
+    })
+}
+
+/// Run a `(jid, name)` query, keeping only names that survive
+/// validation. Both tables are small - a few hundred rows.
+fn query_name_map(conn: &Connection, sql: &str) -> AppResult<HashMap<String, String>> {
     let mut out = HashMap::new();
-    let mut stmt = conn.prepare(
-        "SELECT ZJID, ZPUSHNAME FROM ZWAPROFILEPUSHNAME
-         WHERE ZJID IS NOT NULL AND ZPUSHNAME IS NOT NULL",
-    )?;
+    let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
@@ -522,29 +557,37 @@ fn query_push_names(conn: &Connection) -> AppResult<HashMap<String, String>> {
 /// participants and message senders alike:
 ///   1. the user's own address book, by phone number - so a person
 ///      reads the same on every platform;
-///   2. WhatsApp's `ZWAPROFILEPUSHNAME` table, keyed by jid;
-///   3. whatever name candidates the row carried, validated;
-///   4. the phone number.
+///   2. the name candidates the row itself carried, validated
+///      (`ZPARTNERNAME`, `ZCONTACTNAME`, `ZFIRSTNAME`);
+///   3. the label WhatsApp shows for that jid's own 1:1 chat - which
+///      names a group member the way you know them, not the way they
+///      named themselves;
+///   4. the contact's published push name;
+///   5. the phone number.
 ///
-/// Returns None when nothing survives (an `@lid` contact with no
-/// profile name has no usable label at all).
+/// See `NameBook` for why 2 and 3 outrank 4. Returns None when nothing
+/// survives (an `@lid` contact with no name anywhere has no usable
+/// label at all).
 fn resolve_person(
     jid: Option<&str>,
     row_names: &[Option<&str>],
     dir: &ContactDirectory,
-    push_names: &HashMap<String, String>,
+    book: &NameBook,
 ) -> Option<String> {
     let phone = jid.and_then(jid_phone);
     if let Some(name) = phone.as_deref().and_then(|p| dir.lookup(p)) {
         return Some(name.to_string());
     }
-    if let Some(name) = jid.and_then(|j| push_names.get(j)) {
-        return Some(name.clone());
-    }
     for candidate in row_names {
         if let Some(name) = clean_name(*candidate) {
             return Some(name.to_string());
         }
+    }
+    if let Some(name) = jid.and_then(|j| book.session_labels.get(j)) {
+        return Some(name.clone());
+    }
+    if let Some(name) = jid.and_then(|j| book.push_names.get(j)) {
+        return Some(name.clone());
     }
     phone
 }

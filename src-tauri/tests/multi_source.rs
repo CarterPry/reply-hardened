@@ -475,6 +475,70 @@ fn w15_address_book_outranks_the_push_name_table() {
     assert_eq!(rows[0].name, "Ana Diaz");
 }
 
+/// WhatsApp's own label for a contact beats the name that contact
+/// publishes for themselves - because the label is also the only
+/// string WhatsApp's search will match, and search is the only way to
+/// open a chat that has no phone number.
+///
+/// Verbatim from a real store: `215152175652912@lid` is "David
+/// Gelberg" to WhatsApp and "And David Says" to himself. Preferring
+/// the latter produced a row that typed "And David Says" into
+/// WhatsApp's search and got "No results".
+#[test]
+fn w16_whatsapps_own_label_beats_the_contacts_push_name() {
+    let mut fx = WaFixture::new();
+    let s = fx.session("215152175652912@lid", Some("David Gelberg"));
+    fx.push_name("215152175652912@lid", "And David Says");
+    fx.message(s, false, 3600, Some("Sick"));
+
+    let rows = run_wa(
+        &fx,
+        Direction::Owed,
+        &ContactDirectory::default(),
+        &Local::default(),
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].name, "David Gelberg");
+    // The search hint is what gets typed into WhatsApp; it has to be
+    // the string WhatsApp itself knows.
+    assert_eq!(rows[0].search_hint, "David Gelberg");
+}
+
+/// A group member whose own member row carries no name is labeled the
+/// way you know them - by their 1:1 chat's label - before falling back
+/// to what they call themselves.
+#[test]
+fn w17_group_member_uses_the_label_you_know_them_by() {
+    let mut fx = WaFixture::new();
+    // The same person's 1:1 chat, which is where WhatsApp keeps the
+    // label it shows for them.
+    fx.session("215152175652912@lid", Some("David Gelberg"));
+    fx.push_name("215152175652912@lid", "And David Says");
+
+    let group = fx.session("1203635@g.us", Some("Jacob <> David"));
+    let david = fx.member_raw(group, "215152175652912@lid", None, None);
+    fx.message_full(
+        group,
+        false,
+        3600,
+        Some("Curious to hear"),
+        0,
+        Some(david),
+        None,
+    );
+
+    let rows = run_wa(
+        &fx,
+        Direction::Owed,
+        &ContactDirectory::default(),
+        &Local::default(),
+    );
+    assert_eq!(rows.len(), 1);
+    // "David", not "And".
+    assert_eq!(rows[0].last_sender.as_deref(), Some("David"));
+    assert!(rows[0].participants.contains(&"David Gelberg".to_string()));
+}
+
 // ---------------------------------------------------------------- s*
 
 /// Incoming last → you owe. Outgoing last (and old enough) → waiting.
