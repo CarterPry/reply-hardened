@@ -403,6 +403,50 @@ fn open_url(url: &str) -> Result<(), String> {
         .map_err(|e| format!("opening chat: {e}"))
 }
 
+/// The AppleScript that drives one app's search box. Split out from
+/// `app_search` so its shape is testable without keystroking anything
+/// at a real application.
+fn search_script(platform: Platform, query: &str) -> String {
+    let app = platform.app_name();
+    // Messages filters its sidebar as you type; WhatsApp (Catalyst)
+    // and Signal (Electron) both need noticeably longer before the
+    // first result is selectable, and pressing Return early just
+    // re-opens whatever thread was already showing.
+    let settle = match platform {
+        Platform::IMessage => "0.6",
+        Platform::WhatsApp | Platform::Signal => "1.0",
+    };
+    // In Messages, Return on the focused search field opens the top
+    // hit. WhatsApp's Catalyst search and Signal's Electron one keep
+    // focus in the text field, where Return does nothing useful - the
+    // selection has to be moved into the result list first (key code
+    // 125 = Down). Harmless where Return alone would have worked:
+    // Down lands on the first result either way.
+    let select_first = match platform {
+        Platform::IMessage => "",
+        Platform::WhatsApp | Platform::Signal => "        key code 125\n        delay 0.2\n",
+    };
+    // AppleScript string literals take backslash and quote escapes;
+    // a chat named `say "hi"` must not end the literal early.
+    let safe_query = query.replace('\\', "\\\\").replace('"', "\\\"");
+    // `reopen` restores a window when the app is running windowless -
+    // otherwise ⌘F lands nowhere.
+    format!(
+        r#"tell application "{app}" to reopen
+tell application "{app}" to activate
+delay 0.4
+tell application "System Events"
+    tell process "{app}"
+        keystroke "f" using {{command down}}
+        delay 0.25
+        keystroke "{safe_query}"
+        delay {settle}
+{select_first}        key code 36
+    end tell
+end tell"#
+    )
+}
+
 /// Activate `platform`'s app and type `query` into its search box.
 ///
 /// Best-effort by construction: it needs Accessibility + Automation,
@@ -418,31 +462,7 @@ fn app_search(platform: Platform, query: &str) -> Result<(), String> {
         return Err("no searchable name for this chat".to_string());
     }
     let app = platform.app_name();
-    // Messages filters its sidebar as you type; WhatsApp (Catalyst)
-    // and Signal (Electron) both need noticeably longer before the
-    // first result is selectable, and pressing Return early just
-    // re-opens whatever thread was already showing.
-    let settle = match platform {
-        Platform::IMessage => "0.6",
-        Platform::WhatsApp | Platform::Signal => "1.0",
-    };
-    let safe_query = query.replace('\\', "\\\\").replace('"', "\\\"");
-    // `reopen` restores a window when the app is running windowless -
-    // otherwise ⌘F lands nowhere.
-    let script = format!(
-        r#"tell application "{app}" to reopen
-tell application "{app}" to activate
-delay 0.4
-tell application "System Events"
-    tell process "{app}"
-        keystroke "f" using {{command down}}
-        delay 0.25
-        keystroke "{safe_query}"
-        delay {settle}
-        key code 36
-    end tell
-end tell"#
-    );
+    let script = search_script(platform, query);
     let out = std::process::Command::new("osascript")
         .arg("-e")
         .arg(&script)
@@ -459,4 +479,47 @@ end tell"#
         return Err("automation_denied".to_string());
     }
     Err(format!("opening chat in {app}: {}", stderr.trim()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn imessage_search_presses_return_without_moving_the_selection() {
+        let script = search_script(Platform::IMessage, "Mom Dad");
+        assert!(script.contains(r#"tell process "Messages""#));
+        assert!(script.contains(r#"keystroke "Mom Dad""#));
+        assert!(script.contains("key code 36"));
+        // No Down: Messages opens the top hit straight from the field.
+        assert!(!script.contains("key code 125"));
+    }
+
+    #[test]
+    fn whatsapp_and_signal_select_the_first_result_before_return() {
+        for (platform, app) in [
+            (Platform::WhatsApp, "WhatsApp"),
+            (Platform::Signal, "Signal"),
+        ] {
+            let script = search_script(platform, "David Gelberg");
+            assert!(script.contains(&format!(r#"tell process "{app}""#)));
+            let down = script.find("key code 125").expect("selects first result");
+            let ret = script.find("key code 36").expect("presses return");
+            assert!(down < ret, "{app}: Down must come before Return");
+            // Slower apps get a longer settle before the selection moves.
+            assert!(script.contains("delay 1.0"));
+        }
+    }
+
+    #[test]
+    fn a_quoted_chat_name_cannot_break_out_of_the_applescript_literal() {
+        let script = search_script(Platform::Signal, r#"say "hi" \ now"#);
+        assert!(script.contains(r#"keystroke "say \"hi\" \\ now""#));
+        // The literal still closes exactly once per keystroke line.
+        let line = script
+            .lines()
+            .find(|l| l.trim_start().starts_with("keystroke \"say"))
+            .expect("keystroke line");
+        assert!(line.trim_end().ends_with('"'));
+    }
 }
