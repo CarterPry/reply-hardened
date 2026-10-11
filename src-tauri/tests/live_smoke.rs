@@ -19,10 +19,10 @@
 
 mod fixture;
 
-use repli_lib::contacts;
-use repli_lib::pending::{self, Direction};
-use repli_lib::replies::{assemble, AssembleCtx, Filters, PendingReply};
-use repli_lib::{signal, whatsapp};
+use reply_lib::contacts;
+use reply_lib::pending::{self, Direction};
+use reply_lib::replies::{assemble, AssembleCtx, Filters, PendingReply};
+use reply_lib::{signal, whatsapp};
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -56,19 +56,19 @@ fn describe(label: &str, rows: &[PendingReply]) {
         assert!(!r.chat_guid.trim().is_empty(), "row with no state key");
         assert!(r.timestamp > 0, "row with no timestamp");
         assert!(
-            repli_lib::whatsapp::plausible_name(&r.name),
+            reply_lib::whatsapp::plausible_name(&r.name),
             "implausible display name: {:?}",
             r.name
         );
         if let Some(sender) = r.last_sender.as_deref() {
             assert!(
-                repli_lib::whatsapp::plausible_name(sender),
+                reply_lib::whatsapp::plausible_name(sender),
                 "implausible sender name: {sender:?}"
             );
         }
         for p in &r.participants {
             assert!(
-                repli_lib::whatsapp::plausible_name(p) || p.contains('@'),
+                reply_lib::whatsapp::plausible_name(p) || p.contains('@'),
                 "implausible participant label: {p:?}"
             );
         }
@@ -128,7 +128,7 @@ fn live_sources_are_readable() {
 #[test]
 #[ignore = "reads the real login keychain; run with --ignored"]
 fn live_signal_key_unwraps() {
-    let key = repli_lib::safestorage::signal_db_key()
+    let key = reply_lib::safestorage::signal_db_key()
         .unwrap_or_else(|e| panic!("key recovery failed: {}", e.detail()));
     let hex = key.as_hex_str().expect("key is not 64 hex characters");
     // Never print the key itself.

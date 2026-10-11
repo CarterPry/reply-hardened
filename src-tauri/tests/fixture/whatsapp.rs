@@ -33,7 +33,7 @@ impl WaFixture {
     pub fn new() -> Self {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "repli-wa-fixture-{}-{}.sqlite",
+            "reply-wa-fixture-{}-{}.sqlite",
             std::process::id(),
             n
         ));

@@ -1,4 +1,4 @@
-//! The three message sources Repli reads, and how a source reports
+//! The three message sources Reply reads, and how a source reports
 //! itself when it can't be read.
 //!
 //! Every row the app surfaces carries its `Platform`, and every piece

@@ -37,21 +37,37 @@ pub fn run() {
                 .map_err(|e| format!("resolving app data dir: {e}"))?;
             std::fs::create_dir_all(&data_dir).ok();
             let state_path = data_dir.join("state.db");
+            // One-time carry-over from the pre-rename bundle id
+            // (`local.codex.repli.hardened`): the data dir is keyed by
+            // identifier, so without this the done/snoozed/muted
+            // history would silently start from empty after the rename.
+            if !state_path.exists() {
+                if let Some(parent) = data_dir.parent() {
+                    let legacy = parent.join("local.codex.repli.hardened").join("state.db");
+                    if legacy.exists() {
+                        match std::fs::copy(&legacy, &state_path) {
+                            Ok(_) => log::info!("copied state.db from legacy data dir"),
+                            Err(e) => log::warn!("could not copy legacy state.db: {e}"),
+                        }
+                    }
+                }
+            }
             let store =
                 StateStore::open(&state_path).map_err(|e| format!("opening state db: {e}"))?;
             app.manage(store);
             // Per-source read status, populated on every poll.
             app.manage(SourceStatusStore::default());
 
-            let quit = MenuItem::with_id(app, "quit", "Quit Repli Hardened", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit Reply Hardened", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&quit])?;
 
+            // The app icon is a filled green tile, which a template
+            // image would flatten into a solid square. The menu bar
+            // gets its own monochrome bubble silhouette instead.
+            let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))
+                .map_err(|e| format!("decoding tray icon: {e}"))?;
             TrayIconBuilder::with_id("main")
-                .icon(
-                    app.default_window_icon()
-                        .expect("bundle has a default window icon")
-                        .clone(),
-                )
+                .icon(tray_icon)
                 .icon_as_template(true)
                 .menu(&menu)
                 .show_menu_on_left_click(false)

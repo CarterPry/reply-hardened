@@ -1,4 +1,4 @@
-# Repli Hardened
+# Reply Hardened
 
 This build starts from upstream commit
 `152823956e312f7a4a1a0aa88d23b8b040538b91` (`v0.1.3`) and applies a
@@ -8,8 +8,8 @@ small privacy hardening delta:
   endpoint, launch-time check, download/install code, and tray menu item;
 - replaces contact names and message previews in notifications with a
   generic count and a generic “open the app” message;
-- uses the distinct product name `Repli Hardened` and bundle identifier
-  `local.codex.repli.hardened`;
+- uses the distinct product name `Reply Hardened` and bundle identifier
+  `local.codex.reply.hardened`;
 - does not import the upstream app's legacy state database automatically.
 
 This build has no automatic update path. Review and rebuild from a pinned
@@ -59,6 +59,6 @@ binary's cdhash. Every rebuild produces a new hash, which silently
 voids **Full Disk Access** and **Accessibility** while leaving both
 switches looking enabled in System Settings. After installing a new
 build, toggle each one off and back on (or remove with `-` and re-add
-`/Applications/Repli Hardened.app`), then quit the app from the tray
+`/Applications/Reply Hardened.app`), then quit the app from the tray
 and reopen it - FDA only takes effect on relaunch. A Developer ID
 would make the grants survive updates; nothing else will.

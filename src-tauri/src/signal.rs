@@ -168,7 +168,7 @@ fn is_wal_attach_failure(e: &AppError) -> bool {
 
 fn copy_to_scratch(path: &Path) -> AppResult<ScratchDir> {
     let dir = std::env::temp_dir().join(format!(
-        "repli-signal-{}-{}",
+        "reply-signal-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

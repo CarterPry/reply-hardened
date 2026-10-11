@@ -19,7 +19,7 @@ export function PermissionPrompt({ path, onGrant, onRetry }: PermissionPromptPro
         </li>
         <li>Click the <strong>+</strong> button.</li>
         <li>
-          Add <strong>Repli Hardened</strong>. In dev, also add your terminal or IDE
+          Add <strong>Reply Hardened</strong>. In dev, also add your terminal or IDE
           (whichever launched <code>npm run tauri dev</code>).
         </li>
         <li>Quit and reopen the app, then click Try again.</li>

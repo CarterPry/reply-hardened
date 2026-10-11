@@ -13,12 +13,12 @@ mod fixture;
 
 use fixture::signal::{SignalFixture, ME_CONVERSATION};
 use fixture::whatsapp::{WaFixture, MESSAGE_TYPE_SYSTEM};
-use repli_lib::contacts::ContactDirectory;
-use repli_lib::pending::Direction;
-use repli_lib::replies::{AssembleCtx, Filters, PendingReply};
-use repli_lib::sources::Platform;
-use repli_lib::unknown::UnknownSender;
-use repli_lib::{signal, whatsapp};
+use reply_lib::contacts::ContactDirectory;
+use reply_lib::pending::Direction;
+use reply_lib::replies::{AssembleCtx, Filters, PendingReply};
+use reply_lib::sources::Platform;
+use reply_lib::unknown::UnknownSender;
+use reply_lib::{signal, whatsapp};
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -601,7 +601,7 @@ fn s3_my_reaction_acknowledges_an_owed_thread() {
     );
     assert_eq!(rows.len(), 1);
     assert!(rows[0].acknowledged);
-    assert_eq!(repli_lib::replies::open_count(&rows), 0);
+    assert_eq!(reply_lib::replies::open_count(&rows), 0);
 }
 
 /// Their reaction on YOUR last message acknowledges a waiting thread.

@@ -34,6 +34,6 @@ export async function notifyNew(items: PendingReply[]): Promise<void> {
       items.length === 1
         ? '1 conversation needs attention'
         : `${items.length} conversations need attention`,
-    body: 'Open Repli Hardened to review.',
+    body: 'Open Reply Hardened to review.',
   });
 }

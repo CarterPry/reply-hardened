@@ -54,7 +54,7 @@ impl Fixture {
     pub fn new() -> Self {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let path =
-            std::env::temp_dir().join(format!("repli-fixture-{}-{}.db", std::process::id(), n));
+            std::env::temp_dir().join(format!("reply-fixture-{}-{}.db", std::process::id(), n));
         let _ = std::fs::remove_file(&path);
         let conn = Connection::open(&path).expect("create fixture db");
         conn.execute_batch(

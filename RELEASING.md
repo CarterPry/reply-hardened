@@ -1,20 +1,20 @@
-# Releasing Repli
+# Releasing Reply
 
-Repli auto-updates via [tauri-plugin-updater]. Every release ships a
+Reply auto-updates via [tauri-plugin-updater]. Every release ships a
 DMG (for first installs) plus updater artifacts (`.app.tar.gz` +
 `.sig`) and a `latest.json` manifest that running apps poll from
 GitHub Releases.
 
 ## One-time setup (already done / per machine)
 
-- **Updater keypair** lives at `~/.tauri/repli_updater.key` (private,
-  passwordless) and `~/.tauri/repli_updater.key.pub` (public). The
+- **Updater keypair** lives at `~/.tauri/reply_updater.key` (private,
+  passwordless) and `~/.tauri/reply_updater.key.pub` (public). The
   public key is baked into `src-tauri/tauri.conf.json`.
   **Never commit the private key.** Back it up somewhere safe (e.g.
   a password manager): if it's lost, shipped apps can never verify
   another update and users must re-download manually.
   To sign on another machine or CI, set
-  `TAURI_SIGNING_PRIVATE_KEY_PATH=~/.tauri/repli_updater.key`
+  `TAURI_SIGNING_PRIVATE_KEY_PATH=~/.tauri/reply_updater.key`
   (or put the key contents in `TAURI_SIGNING_PRIVATE_KEY`).
 - The update feed URL is
   `https://github.com/srobins23/repli/releases/latest/download/latest.json`
@@ -51,12 +51,12 @@ permission re-grant papercut on updates.
    (all with `--manifest-path src-tauri/Cargo.toml`).
 3. **Build + sign updater artifacts**:
    ```sh
-   TAURI_SIGNING_PRIVATE_KEY_PATH=~/.tauri/repli_updater.key npm run tauri build
+   TAURI_SIGNING_PRIVATE_KEY_PATH=~/.tauri/reply_updater.key npm run tauri build
    ```
    Outputs land in `src-tauri/target/release/bundle/`:
-   - `dmg/Repli_<ver>_aarch64.dmg` — for new installs
-   - `macos/Repli.app.tar.gz` — the update payload
-   - `macos/Repli.app.tar.gz.sig` — its minisign signature
+   - `dmg/Reply_<ver>_aarch64.dmg` — for new installs
+   - `macos/Reply.app.tar.gz` — the update payload
+   - `macos/Reply.app.tar.gz.sig` — its minisign signature
 4. **Write `latest.json`** (the update manifest). Template:
    ```json
    {
@@ -65,8 +65,8 @@ permission re-grant papercut on updates.
      "pub_date": "2026-07-12T00:00:00Z",
      "platforms": {
        "darwin-aarch64": {
-         "signature": "<contents of Repli.app.tar.gz.sig>",
-         "url": "https://github.com/srobins23/repli/releases/download/v<ver>/Repli.app.tar.gz"
+         "signature": "<contents of Reply.app.tar.gz.sig>",
+         "url": "https://github.com/srobins23/repli/releases/download/v<ver>/Reply.app.tar.gz"
        }
      }
    }
@@ -76,9 +76,9 @@ permission re-grant papercut on updates.
    ```sh
    git tag v<ver> && git push origin main --tags
    gh release create v<ver> \
-     src-tauri/target/release/bundle/dmg/Repli_<ver>_aarch64.dmg \
-     src-tauri/target/release/bundle/macos/Repli.app.tar.gz \
-     src-tauri/target/release/bundle/macos/Repli.app.tar.gz.sig \
+     src-tauri/target/release/bundle/dmg/Reply_<ver>_aarch64.dmg \
+     src-tauri/target/release/bundle/macos/Reply.app.tar.gz \
+     src-tauri/target/release/bundle/macos/Reply.app.tar.gz.sig \
      latest.json \
      --title "v<ver>" --notes "..."
    ```

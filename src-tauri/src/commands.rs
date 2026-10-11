@@ -266,7 +266,7 @@ pub fn add_to_contacts(handle: String) -> Result<(), String> {
         format!("TEL;TYPE=CELL:{h}")
     };
     let vcf = format!("BEGIN:VCARD\r\nVERSION:3.0\r\nFN:{h}\r\n{field}\r\nEND:VCARD\r\n");
-    let path = std::env::temp_dir().join("repli-new-contact.vcf");
+    let path = std::env::temp_dir().join("reply-new-contact.vcf");
     std::fs::write(&path, vcf).map_err(|e| format!("writing vcard: {e}"))?;
     std::process::Command::new("open")
         .arg(&path)

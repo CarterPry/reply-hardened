@@ -38,7 +38,7 @@ impl SignalFixture {
     pub fn new() -> Self {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "repli-signal-fixture-{}-{}.sqlite",
+            "reply-signal-fixture-{}-{}.sqlite",
             std::process::id(),
             n
         ));

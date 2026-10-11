@@ -1,4 +1,4 @@
-# Repli
+# Reply
 
 A minimal macOS menu bar app that surfaces conversations where you owe
 someone a reply and, in a second tab, conversations where someone owes
@@ -11,11 +11,11 @@ list is one triage queue rather than three. Rows carry a small chip
 naming their source, shown only when the list actually spans more than
 one platform.
 
-**Privacy: nothing leaves your machine.** Repli reads local databases
+**Privacy: nothing leaves your machine.** Reply reads local databases
 only (Messages, WhatsApp, Signal, and your address book), makes zero
 network calls, and has no analytics or telemetry of any kind. The only
-writes go to Repli's own small state file. Signal's database is
-encrypted, so Repli also reads one login-keychain item to unwrap the
+writes go to Reply's own small state file. Signal's database is
+encrypted, so Reply also reads one login-keychain item to unwrap the
 key - see [Permissions](#permissions). You can verify all of this;
 it's why the code is open.
 
@@ -23,7 +23,7 @@ it's why the code is open.
 
 Download the latest DMG from
 [Releases](https://github.com/srobins23/repli/releases), open it, and
-**drag Repli to Applications** - don't launch it from inside the disk
+**drag Reply to Applications** - don't launch it from inside the disk
 image window (macOS refuses to run it from there).
 
 The build is ad-hoc signed but not notarized (no Apple Developer ID
@@ -31,8 +31,8 @@ yet), so the first launch from Applications will say macOS "could not
 verify" the app. Two ways past that, pick one:
 
 - Close the dialog, open **System Settings → Privacy & Security**,
-  scroll down, and click **Open Anyway** next to the Repli message, or
-- run `xattr -rd com.apple.quarantine /Applications/Repli.app` in
+  scroll down, and click **Open Anyway** next to the Reply message, or
+- run `xattr -rd com.apple.quarantine /Applications/Reply.app` in
   Terminal.
 
 You'll also need to grant Full Disk Access (see
@@ -68,7 +68,7 @@ is never opened and raises no keychain prompt.
 
 - **Identity.** Names come from your address book first, on every
   platform, so one person reads the same whether they texted you on
-  iMessage, WhatsApp or Signal. Only then does Repli fall back to the
+  iMessage, WhatsApp or Signal. Only then does Reply fall back to the
   name the app itself publishes, and finally to the raw number. On
   WhatsApp that fallback is deliberately narrow: see the name-column
   warning in [Limitations](#limitations).
@@ -152,7 +152,7 @@ Tauri 2 (Rust) + React 18 + TypeScript + Vite.
   rule can't drift between platforms. Name resolution and group labels
   live here too. No IO; everything is injectable, which is what makes
   it testable.
-- `src-tauri/src/state.rs` - Repli's own state (completed, snoozed,
+- `src-tauri/src/state.rs` - Reply's own state (completed, snoozed,
   muted) in a separate SQLite file in the app data directory. No
   message database is ever written to.
 - `src-tauri/src/config.rs` - all behavioral constants, including the
@@ -168,7 +168,7 @@ Tauri 2 (Rust) + React 18 + TypeScript + Vite.
 > **Build the Rust target outside iCloud Drive.** If this checkout
 > lives under an iCloud-synced folder (`~/Documents`, `~/Desktop`),
 > point `CARGO_TARGET_DIR` somewhere else - e.g.
-> `export CARGO_TARGET_DIR=~/Library/Caches/repli-target`. iCloud
+> `export CARGO_TARGET_DIR=~/Library/Caches/reply-target`. iCloud
 > stamps `com.apple.fileprovider.fpfs#P` on the built `.app`, which
 > makes `codesign` fail with *"resource fork, Finder information, or
 > similar detritus not allowed"*, and syncing a multi-gigabyte target
@@ -180,7 +180,7 @@ Tauri 2 (Rust) + React 18 + TypeScript + Vite.
 
 ```bash
 git clone https://github.com/srobins23/repli.git
-cd repli
+cd reply
 npm install
 ```
 
@@ -188,7 +188,7 @@ npm install
 
 ### Full Disk Access (required)
 
-Repli reads files under `~/Library/`, which macOS protects behind
+Reply reads files under `~/Library/`, which macOS protects behind
 **Full Disk Access (FDA)**. One grant covers all three message
 databases. The app detects FDA-blocked reads and shows an inline
 prompt instead of crashing.
@@ -199,7 +199,7 @@ prompt instead of crashing.
    - **In dev:** add the terminal/IDE that runs `npm run tauri dev`
      (e.g. Terminal.app, iTerm, VS Code, Cursor). This is the #1
      stuck-point: the *parent process* needs FDA, not the app.
-   - **In a built app:** add `Repli.app` from the bundle path
+   - **In a built app:** add `Reply.app` from the bundle path
      printed by `npm run tauri build`.
 4. **Quit the app fully and reopen it**, via the tray icon's Quit,
    not just closing the window (closing only hides it). This is the
@@ -212,7 +212,7 @@ to the FDA pane.
 
 Signal's database key lives in `config.json`, encrypted under a
 password in your login keychain (the generic password **"Signal Safe
-Storage"**). The first time Repli reads it, macOS asks you to allow
+Storage"**). The first time Reply reads it, macOS asks you to allow
 access - click **Always Allow** so the 30-second poll doesn't re-ask.
 Deny it and Signal simply drops out of the list with a one-line
 explanation; nothing else is affected. Set `ENABLE_SIGNAL = false` in
@@ -296,7 +296,7 @@ cargo test   --manifest-path src-tauri/Cargo.toml
   - **WhatsApp** does nothing on Return, and orders results by
     recency rather than by match: searching `S25 x The Landing 🔥✨`
     returns two unrelated recent chats before the group itself. No
-    keystroke reliably picks the right row, so Repli stops at the
+    keystroke reliably picks the right row, so Reply stops at the
     filled search box and says "Searched in WhatsApp - click the chat
     there". One click, rather than a chance of opening someone else's
     conversation.
@@ -306,7 +306,7 @@ cargo test   --manifest-path src-tauri/Cargo.toml
   `+CgAQgueA1gY=`, `ZWAMESSAGE.ZPUSHNAME` reading
   `COi9hdYGIABIAZABAPABAtgC…`, and `ZWACHATSESSION.ZLASTMESSAGETEXT`
   likewise (which is why the last message is recomputed from
-  `ZWAMESSAGE` instead of read from the session row). Repli prefers
+  `ZWAMESSAGE` instead of read from the session row). Reply prefers
   `ZWAPROFILEPUSHNAME`, the one name source here that is never a blob,
   and validates every other candidate with `plausible_name` before it
   can reach the screen. A contact with no trustworthy name shows its
@@ -323,19 +323,19 @@ cargo test   --manifest-path src-tauri/Cargo.toml
 - **Signal reads best while Signal is running.** Signal Desktop keeps
   its database in WAL mode; a read-only connection can share that
   while the app is open. With Signal closed, SQLite can't build the
-  index it needs, so Repli falls back to a throwaway copy of the
+  index it needs, so Reply falls back to a throwaway copy of the
   **still-encrypted** db/wal/shm triple in your temp directory, reads
   it, and deletes it immediately. Nothing is ever decrypted to disk.
-- **Disappearing messages.** Repli reads whatever the apps have
-  already stored locally; a message that expired before Repli looked
-  is simply not there. Repli never copies message text anywhere.
+- **Disappearing messages.** Reply reads whatever the apps have
+  already stored locally; a message that expired before Reply looked
+  is simply not there. Reply never copies message text anywhere.
 - **attributedBody decoding is partial.** On macOS 13+, message text
-  often lives in a typedstream-encoded `attributedBody` blob. Repli
+  often lives in a typedstream-encoded `attributedBody` blob. Reply
   extracts the first NSString payload, which covers normal texts but
   can miss some edited or heavily formatted messages (those rows show
   no preview).
 - **No sync.** Completed/snoozed/muted state is local to the machine.
-- **No compose surface.** Repli never sends messages; tap a row to
+- **No compose surface.** Reply never sends messages; tap a row to
   open the conversation in Messages.
 
 ## Distributing to other people

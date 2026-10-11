@@ -6,6 +6,6 @@
 	     auto-denies Apple Events silently (error -1743) and the app
 	     never appears in Settings → Privacy & Security → Automation. -->
 	<key>NSAppleEventsUsageDescription</key>
-	<string>Repli Hardened opens conversations by driving the Messages search field.</string>
+	<string>Reply Hardened opens conversations by driving the Messages search field.</string>
 </dict>
 </plist>

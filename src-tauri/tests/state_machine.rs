@@ -11,9 +11,9 @@
 mod fixture;
 
 use fixture::*;
-use repli_lib::contacts::ContactDirectory;
-use repli_lib::pending::{read_pending_replies_at, Direction};
-use repli_lib::replies::{assemble, open_count, AssembleCtx, PendingReply};
+use reply_lib::contacts::ContactDirectory;
+use reply_lib::pending::{read_pending_replies_at, Direction};
+use reply_lib::replies::{assemble, open_count, AssembleCtx, PendingReply};
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -627,7 +627,7 @@ fn d7_local_state_filters_still_apply() {
 // e* - done-state persistence, migration, undo
 // ---------------------------------------------------------------
 
-use repli_lib::state::{DoneItem, MutedChat, StateStore};
+use reply_lib::state::{DoneItem, MutedChat, StateStore};
 use std::path::PathBuf;
 
 /// Throwaway on-disk state.db, so tests can exercise the actual
@@ -641,7 +641,7 @@ impl TempState {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path =
-            std::env::temp_dir().join(format!("repli-state-{}-{}.db", std::process::id(), n));
+            std::env::temp_dir().join(format!("reply-state-{}-{}.db", std::process::id(), n));
         let _ = std::fs::remove_file(&path);
         Self { path }
     }
@@ -876,13 +876,13 @@ fn f1_newest_thread_first() {
 // g* - unknown senders view
 // ---------------------------------------------------------------
 
-use repli_lib::unknown::{assemble_unknown, read_unknown_senders};
+use reply_lib::unknown::{assemble_unknown, read_unknown_senders};
 
 fn unknowns(
     fx: &Fixture,
     dir: &ContactDirectory,
     store: &StateStore,
-) -> Vec<repli_lib::unknown::UnknownSender> {
+) -> Vec<reply_lib::unknown::UnknownSender> {
     let rows = read_unknown_senders(&fx.path).expect("query unknown senders");
     let done = store.done_map().expect("done map");
     let snoozed = store.snoozed_until().expect("snoozed");

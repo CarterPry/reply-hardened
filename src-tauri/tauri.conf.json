@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Repli Hardened",
+  "productName": "Reply Hardened",
   "version": "0.1.3",
-  "identifier": "local.codex.repli.hardened",
+  "identifier": "local.codex.reply.hardened",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5174",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Repli Hardened",
+        "title": "Reply Hardened",
         "width": 460,
         "height": 760,
         "minWidth": 380,

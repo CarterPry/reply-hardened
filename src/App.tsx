@@ -506,8 +506,8 @@ export function App() {
         <div className="banner">
           <p>
             {banner === 'accessibility'
-              ? 'Opening groups and Signal chats needs the Accessibility permission. Enable "Repli Hardened" under System Settings → Privacy & Security → Accessibility. If it is already listed there, toggle it OFF and back ON — this build is ad-hoc signed, so every rebuild invalidates the old grant while leaving the switch looking enabled.'
-              : 'Opening this chat needs permission to control the messaging app. Allow "Repli Hardened" under System Settings → Privacy & Security → Automation, then try again.'}
+              ? 'Opening groups and Signal chats needs the Accessibility permission. Enable "Reply Hardened" under System Settings → Privacy & Security → Accessibility. If it is already listed there, toggle it OFF and back ON — this build is ad-hoc signed, so every rebuild invalidates the old grant while leaving the switch looking enabled.'
+              : 'Opening this chat needs permission to control the messaging app. Allow "Reply Hardened" under System Settings → Privacy & Security → Automation, then try again.'}
           </p>
           <div className="banner__actions">
             <button
