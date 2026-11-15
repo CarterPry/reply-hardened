@@ -156,13 +156,6 @@ Tauri 2 (Rust) + React 18 + TypeScript + Vite.
 > mid-build. If you hit the codesign error anyway:
 > `xattr -cr <app> && codesign --force --deep --sign - <app>`.
 
-## Setup
-
-```bash
-git clone https://github.com/srobins23/repli.git
-cd reply
-npm install
-```
 
 ## Permissions
 
