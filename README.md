@@ -19,26 +19,6 @@ encrypted, so Reply also reads one login-keychain item to unwrap the
 key - see [Permissions](#permissions). You can verify all of this;
 it's why the code is open.
 
-## Install
-
-Download the latest DMG from
-[Releases](https://github.com/srobins23/repli/releases), open it, and
-**drag Reply to Applications** - don't launch it from inside the disk
-image window (macOS refuses to run it from there).
-
-The build is ad-hoc signed but not notarized (no Apple Developer ID
-yet), so the first launch from Applications will say macOS "could not
-verify" the app. Two ways past that, pick one:
-
-- Close the dialog, open **System Settings → Privacy & Security**,
-  scroll down, and click **Open Anyway** next to the Reply message, or
-- run `xattr -rd com.apple.quarantine /Applications/Reply.app` in
-  Terminal.
-
-You'll also need to grant Full Disk Access (see
-[Permissions](#permissions)). Apple Silicon only for now; Intel users
-can build from source below.
-
 ## How it works
 
 ### The sources
